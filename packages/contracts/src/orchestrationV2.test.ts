@@ -1607,6 +1607,24 @@ describe("sidebar organization", () => {
     expect(
       resolveSidebarParentThreadId({ lineage: lineage(null, null), forkedFrom: null }),
     ).toBeNull();
+    const task = {
+      lineage: lineage(null, null),
+      forkedFrom: null,
+      creatorThreadId: ThreadId.make("creator"),
+    };
+    expect(resolveSidebarParentThreadId(task)).toBe("creator");
+    expect(
+      resolveSidebarParentThreadId({ ...task, sidebarOrganization: { type: "top-level" } }),
+    ).toBeNull();
+    expect(
+      resolveSidebarParentThreadId({
+        ...task,
+        sidebarOrganization: { type: "parent", threadId: ThreadId.make("chosen") },
+      }),
+    ).toBe("chosen");
+    expect(
+      resolveSidebarParentThreadId({ ...subagent, creatorThreadId: ThreadId.make("creator") }),
+    ).toBe("parent");
   });
 
   it("decodes the three placements and rejects one it cannot store", () => {

@@ -208,6 +208,7 @@ import {
   firstValidTimestampMs,
   hasUnseenCompletion,
   isSidebarNestedLinkClick,
+  isSidebarSubagentThread,
   isSidebarThreadWorking,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
@@ -260,14 +261,17 @@ import {
   collectSidebarDescendants,
   flattenSidebarFamily,
   isSidebarLifecycleOwnedByParent,
-  resolveSidebarFamilyExpanded,
+  resolveSidebarOrdinaryExpanded,
   resolveSidebarFamilySection,
   sidebarAncestorKeys,
   sidebarNestedConversations,
+  sidebarFamilyGroupKinds,
+  sidebarOrdinaryGroupKey,
+  sidebarSubagentGroupKey,
   sidebarThreadKey,
   stepSidebarSearchRow,
-  summarizeSidebarDescendants,
-  type SidebarDescendantSummary,
+  summarizeSidebarFamilyGroup,
+  type SidebarGroupSummary,
   type SidebarFamilyRow,
   type SidebarFamilySummaryStatus,
 } from "./Sidebar.tree";
@@ -1210,18 +1214,21 @@ const familyStatusChip: Record<SidebarFamilySummaryStatus, { label: string; clas
 function SidebarFamilyBar(props: {
   parentKey: string;
   expanded: boolean;
-  summary: SidebarDescendantSummary;
+  summary: SidebarGroupSummary;
+  subagents?: boolean;
   onToggle: (parentKey: string) => void;
 }) {
   const { summary } = props;
-  const sessions = `${summary.sessionCount} ${summary.sessionCount === 1 ? "thread" : "threads"}`;
+  const sessions = props.subagents
+    ? `Subagents · ${summary.sessionCount}`
+    : `${summary.sessionCount} ${summary.sessionCount === 1 ? "thread" : "threads"}`;
   return (
     <button
       type="button"
       aria-expanded={props.expanded}
       onClick={() => props.onToggle(props.parentKey)}
       data-thread-selection-safe
-      data-testid="sidebar-family-toggle"
+      data-testid={props.subagents ? "sidebar-subagents-toggle" : "sidebar-family-toggle"}
       className="flex h-5 w-full cursor-pointer items-center gap-1.5 rounded-sm px-2.5 text-left text-2xs font-medium text-sidebar-muted-foreground/60 outline-none hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
     >
       <ChevronDownIcon
@@ -1230,6 +1237,17 @@ function SidebarFamilyBar(props: {
       />
       <span className="min-w-0 truncate">
         {summary.projectCount > 1 ? `${sessions} · ${summary.projectCount} projects` : sessions}
+        {summary.otherSessionCount > 0
+          ? ` · ${summary.otherSessionCount} ${
+              props.subagents
+                ? summary.otherSessionCount === 1
+                  ? "thread"
+                  : "threads"
+                : summary.otherSessionCount === 1
+                  ? "subagent"
+                  : "subagents"
+            }`
+          : null}
       </span>
       {props.expanded ? null : (
         <span className="ml-auto inline-flex shrink-0 items-center gap-2">
@@ -2614,6 +2632,9 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
               >
                 {thread.title}
               </span>
+              {isSidebarSubagentThread(thread) ? (
+                <span className="shrink-0 text-2xs text-sidebar-muted-foreground">Subagent</span>
+              ) : null}
               <span id={`${props.resultId}-pr`} className="contents">
                 <ThreadSearchPullRequestNumber
                   thread={thread}
@@ -3440,9 +3461,11 @@ export default function Sidebar() {
     >();
     for (const root of threadTree.roots) {
       const rootKey = sidebarThreadKey(root);
-      if (!threadTree.childrenByKey.has(rootKey)) continue;
+      if (sidebarFamilyGroupKinds(threadTree, rootKey) === null) continue;
       const rows = flattenSidebarFamily(threadTree, rootKey, {
-        isExpanded: (key, children) => resolveSidebarFamilyExpanded(familyExpansion[key], children),
+        isExpanded: (key, children) =>
+          resolveSidebarOrdinaryExpanded(familyExpansion, key, children),
+        isSubagentsExpanded: (key) => familyExpansion[sidebarSubagentGroupKey(key)] ?? false,
         revealKey: routeThreadKey,
       });
       for (const row of rows) {
@@ -3455,7 +3478,9 @@ export default function Sidebar() {
         rows,
         // Everything that adds height below the root: its summary line, each
         // nested row and each nested parent's summary line.
-        lineCount: 1 + rows.length + rows.filter((row) => row.childCount > 0).length,
+        lineCount: [rootKey, ...rows.map((row) => row.key)].reduce((count, key) => {
+          return count + (sidebarFamilyGroupKinds(threadTree, key)?.length ?? 0);
+        }, rows.length),
       });
     }
     return { familyRowsByParentKey: rowsByParentKey, familyByRootKey: byRootKey };
@@ -3464,20 +3489,23 @@ export default function Sidebar() {
   const familySummaryByParentKey = useMemo(
     () =>
       new Map(
-        [...threadTree.childrenByKey.keys()].map((parentKey) => [
-          parentKey,
-          summarizeSidebarDescendants(
-            collectSidebarDescendants(threadTree, parentKey, sidebarThreadKey),
-            (thread) =>
-              hasUnseenCompletion({
-                ...thread,
-                lastVisitedAt: resolveThreadLastVisitedAt(
-                  thread.lastVisitedAt,
-                  localLastVisitedAtByKey[sidebarThreadKey(thread)],
+        [...threadTree.childrenByKey.keys()].flatMap((parentKey) => {
+          return (sidebarFamilyGroupKinds(threadTree, parentKey) ?? []).map(
+            (kind) =>
+              [
+                kind === "subagents" ? sidebarSubagentGroupKey(parentKey) : parentKey,
+                summarizeSidebarFamilyGroup(threadTree, parentKey, kind, (thread) =>
+                  hasUnseenCompletion({
+                    ...thread,
+                    lastVisitedAt: resolveThreadLastVisitedAt(
+                      thread.lastVisitedAt,
+                      localLastVisitedAtByKey[sidebarThreadKey(thread)],
+                    ),
+                  }),
                 ),
-              }),
-          ),
-        ]),
+              ] as const,
+          );
+        }),
       ),
     [localLastVisitedAtByKey, threadTree],
   );
@@ -3555,10 +3583,19 @@ export default function Sidebar() {
     (parentKey: string) =>
       setFamilyExpansion((current) => ({
         ...current,
-        [parentKey]: !resolveSidebarFamilyExpanded(
-          current[parentKey],
+        [sidebarOrdinaryGroupKey(parentKey)]: !resolveSidebarOrdinaryExpanded(
+          current,
+          parentKey,
           threadTreeRef.current.childrenByKey.get(parentKey) ?? [],
         ),
+      })),
+    [setFamilyExpansion],
+  );
+  const toggleSubagents = useCallback(
+    (groupKey: string) =>
+      setFamilyExpansion((current) => ({
+        ...current,
+        [groupKey]: !(current[groupKey] ?? false),
       })),
     [setFamilyExpansion],
   );
@@ -5923,40 +5960,58 @@ export default function Sidebar() {
                       // The lines under a parent: its summary toggle, then its
                       // visible children, each followed by its own family.
                       const renderFamilyLines = (parentKey: string): ReactNode => {
-                        const summary = familySummaryByParentKey.get(parentKey);
-                        if (summary === undefined) return null;
+                        const groups = sidebarFamilyGroupKinds(threadTree, parentKey);
+                        if (groups === null) return null;
                         const rows = familyRowsByParentKey.get(parentKey) ?? [];
-                        return (
-                          <li key={`${parentKey}:family`} className="list-none">
-                            <SidebarFamilyBar
-                              parentKey={parentKey}
-                              expanded={resolveSidebarFamilyExpanded(
-                                familyExpansion[parentKey],
-                                threadTree.childrenByKey.get(parentKey) ?? [],
-                              )}
-                              summary={summary}
-                              onToggle={toggleThreadFamily}
-                            />
-                            {rows.length > 0 ? (
-                              <ul
-                                role="presentation"
-                                className="ml-3.5 flex flex-col gap-px border-sidebar-border border-l pl-1.5"
-                              >
-                                {rows.map((row) => (
-                                  <Fragment key={row.key}>
-                                    {renderThreadRowInner(
-                                      row.thread,
-                                      sectionByThreadKey.get(row.key) ?? "active",
-                                      undefined,
-                                      true,
-                                    )}
-                                    {row.childCount > 0 ? renderFamilyLines(row.key) : null}
-                                  </Fragment>
-                                ))}
-                              </ul>
-                            ) : null}
-                          </li>
-                        );
+                        const children = threadTree.childrenByKey.get(parentKey) ?? [];
+                        return groups.map((kind) => {
+                          const subagents = kind === "subagents";
+                          const groupKey = subagents
+                            ? sidebarSubagentGroupKey(parentKey)
+                            : parentKey;
+                          const summary = familySummaryByParentKey.get(groupKey);
+                          if (summary === undefined) return null;
+                          const groupRows = rows.filter(
+                            (row) => isSidebarSubagentThread(row.thread) === subagents,
+                          );
+                          return (
+                            <li key={groupKey} className="list-none">
+                              <SidebarFamilyBar
+                                parentKey={groupKey}
+                                subagents={subagents}
+                                expanded={
+                                  subagents
+                                    ? (familyExpansion[groupKey] ?? false)
+                                    : resolveSidebarOrdinaryExpanded(
+                                        familyExpansion,
+                                        parentKey,
+                                        children,
+                                      )
+                                }
+                                summary={summary}
+                                onToggle={subagents ? toggleSubagents : toggleThreadFamily}
+                              />
+                              {groupRows.length > 0 ? (
+                                <ul
+                                  role="presentation"
+                                  className="ml-3.5 flex flex-col gap-px border-sidebar-border border-l pl-1.5"
+                                >
+                                  {groupRows.map((row) => (
+                                    <Fragment key={row.key}>
+                                      {renderThreadRowInner(
+                                        row.thread,
+                                        sectionByThreadKey.get(row.key) ?? "active",
+                                        undefined,
+                                        true,
+                                      )}
+                                      {row.childCount > 0 ? renderFamilyLines(row.key) : null}
+                                    </Fragment>
+                                  ))}
+                                </ul>
+                              ) : null}
+                            </li>
+                          );
+                        });
                       };
                       // `section` is where the family sits. A root shown there
                       // for a nested conversation keeps its own section's row

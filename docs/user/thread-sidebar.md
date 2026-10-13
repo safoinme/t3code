@@ -126,12 +126,20 @@ cannot drag or move threads within it. Your saved order returns when you turn it
 
 ## Group threads into trees
 
-On web and desktop, the sidebar nests related threads under one parent. A fork sits
-under the thread it was forked from, and the subagents a thread starts sit under that
-thread. A closed tree still reports what is inside: how many threads, and whether any
+On web and desktop, the sidebar nests related conversations under one parent. A fork
+sits under the thread it was forked from. Ordinary task conversations an agent creates
+sit under the thread that created them. Delegated work appears in a separate
+**Subagents** group beneath its owner, closed by default. Each group has its own
+count and open/closed choice. A closed group still reports whether its threads
 need an approval or an answer, finished unread, are working, or are waiting on
-background work. The thread you have open stays visible even when its tree is closed.
-A tree of subagents alone starts closed.
+background work, including descendants of the other kind. Those descendants have a
+separately labelled count. The thread you have open stays visible even when its tree is closed.
+Older task conversations whose creator is unknown stay at the top level until you
+group them yourself.
+
+New creator-only task groups start open. Saved choices for forks and manually
+grouped ordinary conversations remain; closing an old subagent-only group does not
+close newly grouped tasks.
 
 A tree has three levels: a parent, the threads under it, and the threads under
 those. When forks or subagents go deeper than that, the deeper ones are listed on
@@ -150,7 +158,7 @@ To group threads yourself, use a thread's menu, in the sidebar or in the chat he
 - **Move to top level** takes a thread out of its parent. It is also how you keep
   a thread at the top when its parent is archived: without it, the thread goes back
   under the parent when the parent returns.
-- **Return to original parent** puts a fork or subagent you moved back where it
+- **Return to original parent** puts a task conversation, fork or subagent you moved back where it
   started.
 
 You cannot add a fourth level. New subthread is not offered on a thread on the

@@ -47,6 +47,7 @@ it.effect("attributes a launched thread's first message to the calling thread", 
       deletedAt: null,
     } as OrchestrationV2ThreadShell;
     let launchedSender: ThreadId | undefined;
+    let launchedCreator: ThreadId | undefined;
     const layerDependencies = Layer.mergeAll(
       ServerSettings.layerTest(),
       NodeCrypto.layer,
@@ -68,6 +69,7 @@ it.effect("attributes a launched thread's first message to the calling thread", 
       Layer.mock(ThreadLaunch.ThreadLaunchService)({
         launch: (input) => {
           launchedSender = input.initialMessage?.senderThreadId;
+          launchedCreator = input.creatorThreadId;
           return Effect.succeed({
             threadId: input.threadId,
             projection: {
@@ -98,6 +100,12 @@ it.effect("attributes a launched thread's first message to the calling thread", 
       .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(layerDependencies));
     expect(result.at(-1)?.result).toMatchObject({ projectId, modelSelection });
     expect(launchedSender).toBe(sourceThreadId);
+    expect(launchedCreator).toBe(sourceThreadId);
+    yield* toolkit
+      .handle("t3_thread_launch", { title: "Empty task" })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(layerDependencies));
+    expect(launchedSender).toBeUndefined();
+    expect(launchedCreator).toBe(sourceThreadId);
   }),
 );
 
@@ -489,6 +497,7 @@ it.effect("a client launches at its ceiling with the project's default model", (
     expect(result.at(-1)?.result).toMatchObject({ projectId, modelSelection });
     expect(launched[0]?.runtimeMode).toBe("auto-accept-edits");
     expect(launched[0]?.initialMessage?.senderThreadId).toBeUndefined();
+    expect(launched[0]?.creatorThreadId).toBeUndefined();
 
     const escalated = yield* handle({ title: "Fix", projectId, runtimeMode: "full-access" });
     expect(escalated.at(-1)?.result).toMatchObject({ code: "runtime_mode_escalation_denied" });

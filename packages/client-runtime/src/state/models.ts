@@ -102,6 +102,7 @@ export interface EnvironmentThreadShell {
   readonly lineage: OrchestrationV2ThreadShell["lineage"];
   /** Sidebar tree placement, display only and never agent lineage. Absent means automatic. */
   readonly sidebarOrganization?: OrchestrationV2ThreadShell["sidebarOrganization"];
+  readonly creatorThreadId?: OrchestrationV2ThreadShell["creatorThreadId"];
   readonly forkedFrom: OrchestrationV2ThreadShell["forkedFrom"];
   readonly activeProviderThreadId: OrchestrationV2ThreadShell["activeProviderThreadId"];
   readonly latestRun: ThreadRunSummary | null;
@@ -248,6 +249,7 @@ export function presentThreadShell(
     linkedPullRequest: thread.linkedPullRequest ?? null,
     branchPullRequest: thread.branchPullRequest ?? null,
     lineage: thread.lineage,
+    ...(thread.creatorThreadId === undefined ? {} : { creatorThreadId: thread.creatorThreadId }),
     ...(thread.sidebarOrganization === undefined
       ? {}
       : { sidebarOrganization: thread.sidebarOrganization }),

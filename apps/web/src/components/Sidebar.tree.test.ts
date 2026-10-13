@@ -9,12 +9,17 @@ import {
   isSidebarLifecycleOwnedByParent,
   listSidebarMoveTargets,
   resolveSidebarFamilyExpanded,
+  resolveSidebarOrdinaryExpanded,
   resolveSidebarFamilySection,
   sidebarAncestorKeys,
   sidebarNestedConversations,
+  sidebarFamilyGroupKinds,
+  sidebarOrdinaryGroupKey,
+  sidebarSubagentGroupKey,
   sidebarThreadKey,
   stepSidebarSearchRow,
   summarizeSidebarDescendants,
+  summarizeSidebarFamilyGroup,
 } from "./Sidebar.tree";
 
 const local = EnvironmentId.make("env-local");
@@ -34,6 +39,7 @@ function thread(
     readonly archived?: boolean;
     readonly forkOf?: string;
     readonly subagentOf?: string;
+    readonly creator?: string;
     readonly organization?: TreeThread["sidebarOrganization"];
     readonly createdAt?: string;
   } = {},
@@ -61,6 +67,7 @@ function thread(
         ? null
         : { type: "run", threadId: ThreadId.make(options.forkOf), runId: RunId.make("run-1") },
     ...(options.organization === undefined ? {} : { sidebarOrganization: options.organization }),
+    ...(options.creator === undefined ? {} : { creatorThreadId: ThreadId.make(options.creator) }),
     archivedAt: options.archived ? "2026-01-02T00:00:00.000Z" : null,
   };
 }
@@ -337,6 +344,51 @@ describe("flattenSidebarFamily", () => {
 
     expect(rows.map((row) => row.thread.id)).toEqual(["a", "a1"]);
   });
+
+  it("keeps ordinary task conversations prominent and agents independently collapsed", () => {
+    const mixed = build([
+      thread("root"),
+      thread("agent", { subagentOf: "root" }),
+      thread("task", { creator: "root", projectId: "project-b" }),
+      thread("task-child", { creator: "task" }),
+      thread("task-agent", { subagentOf: "task" }),
+    ]);
+    const choices: Record<string, boolean> = { [key("root")]: true };
+    const visible = (revealKey: string | null = null, agents = false) =>
+      flattenSidebarFamily(mixed, key("root"), {
+        isExpanded: (nodeKey, children) => resolveSidebarFamilyExpanded(choices[nodeKey], children),
+        isSubagentsExpanded: () => agents,
+        revealKey,
+      }).map((row) => [row.thread.id, row.depth]);
+    expect(visible()).toEqual([
+      ["task", 1],
+      ["task-child", 2],
+    ]);
+    expect(sidebarNestedConversations(mixed, key("root")).map((row) => row.id)).toEqual([
+      "task",
+      "task-child",
+    ]);
+    expect(visible(null, true)).toEqual([
+      ["task", 1],
+      ["task-child", 2],
+      ["task-agent", 2],
+      ["agent", 1],
+    ]);
+    choices[key("root")] = false;
+    expect(visible(key("task-agent"))).toEqual([
+      ["task", 1],
+      ["task-child", 2],
+      ["task-agent", 2],
+    ]);
+    const saved = { ...choices };
+    expect(buildSidebarSearchRows(mixed, [key("agent")]).map((row) => row.thread.id)).toEqual([
+      "root",
+      "agent",
+    ]);
+    expect(choices).toEqual(saved);
+    expect(visible()).toEqual([]);
+    expect(visible(null, true)).toEqual([["agent", 1]]);
+  });
 });
 
 describe("buildSidebarSearchRows", () => {
@@ -440,6 +492,81 @@ describe("resolveSidebarFamilyExpanded", () => {
   });
 });
 
+describe("ordinary expansion migration and family layout", () => {
+  it("leaves childless and missing-parent roots bare, with groups only on actual parents", () => {
+    const tree = build([
+      thread("lone"),
+      thread("root"),
+      thread("task", { creator: "root" }),
+      thread("agent", { subagentOf: "root" }),
+      thread("orphan", { creator: "missing" }),
+    ]);
+    expect(sidebarFamilyGroupKinds(tree, key("lone"))).toBeNull();
+    expect(sidebarFamilyGroupKinds(tree, key("orphan"))).toBeNull();
+    expect(sidebarFamilyGroupKinds(tree, key("task"))).toBeNull();
+    expect(sidebarFamilyGroupKinds(tree, key("root"))).toEqual(["ordinary", "subagents"]);
+    expect(
+      flattenSidebarFamily(tree, key("lone"), { isExpanded: () => true, revealKey: null }),
+    ).toEqual([]);
+  });
+
+  it("ignores an old agent-only collapse for creator tasks while retaining new choices and reveal", () => {
+    const tree = build([
+      thread("root"),
+      thread("task", { creator: "root" }),
+      thread("agent", { subagentOf: "root" }),
+      thread("task-agent", { subagentOf: "task" }),
+    ]);
+    const choices: Record<string, boolean> = { [key("root")]: false };
+    const visible = (revealKey: string | null = null) =>
+      flattenSidebarFamily(tree, key("root"), {
+        isExpanded: (parentKey, children) =>
+          resolveSidebarOrdinaryExpanded(choices, parentKey, children),
+        isSubagentsExpanded: (parentKey) => choices[sidebarSubagentGroupKey(parentKey)] ?? false,
+        revealKey,
+      }).map((row) => row.thread.id);
+    expect(visible()).toEqual(["task"]);
+    choices[sidebarOrdinaryGroupKey(key("root"))] = false;
+    expect(visible()).toEqual([]);
+    expect(visible(key("task-agent"))).toEqual(["task", "task-agent"]);
+    const saved = { ...choices };
+    expect(buildSidebarSearchRows(tree, [key("agent")]).map((row) => row.thread.id)).toEqual([
+      "root",
+      "agent",
+    ]);
+    expect(choices).toEqual(saved);
+    expect(visible()).toEqual([]);
+    choices[sidebarOrdinaryGroupKey(key("root"))] = true;
+    expect(visible()).toEqual(["task"]);
+  });
+
+  it("retains old ordinary fork/manual choices, with versioned toggles taking precedence", () => {
+    const choices = { [key("root")]: false };
+    const task = thread("task", { creator: "root" });
+    for (const priorChild of [
+      thread("fork", { forkOf: "root" }),
+      thread("manual", { organization: under("root") }),
+      thread("manual-task", { creator: "root", organization: under("root") }),
+    ]) {
+      expect(resolveSidebarOrdinaryExpanded(choices, key("root"), [priorChild, task])).toBe(false);
+      expect(
+        resolveSidebarOrdinaryExpanded(
+          { ...choices, [sidebarOrdinaryGroupKey(key("root"))]: true },
+          key("root"),
+          [priorChild, task],
+        ),
+      ).toBe(true);
+      expect(
+        resolveSidebarOrdinaryExpanded(
+          { [key("root")]: true, [sidebarOrdinaryGroupKey(key("root"))]: false },
+          key("root"),
+          [priorChild],
+        ),
+      ).toBe(false);
+    }
+  });
+});
+
 describe("summarizeSidebarDescendants", () => {
   const status = (
     overrides: Partial<Parameters<typeof summarizeSidebarDescendants>[0][number]>,
@@ -455,6 +582,74 @@ describe("summarizeSidebarDescendants", () => {
     ({ status: value }) as NonNullable<
       Parameters<typeof summarizeSidebarDescendants>[0][number]["runtime"]
     >;
+
+  it("counts each kind separately but carries every concealed mixed descendant's status", () => {
+    for (const subagents of [false, true]) {
+      const owner = {
+        ...thread("owner", subagents ? { subagentOf: "root" } : { creator: "root" }),
+        ...status({}),
+      };
+      const pending = [
+        status({ hasPendingApprovals: true }),
+        status({ hasPendingUserInput: true }),
+        status({ runtime: runtime("running") }),
+        status({ runtime: runtime("failed") }),
+        status({}),
+        status({ runtime: runtime("idle") }),
+      ].map((state, index) => ({
+        ...thread(
+          `descendant-${index}`,
+          subagents
+            ? index === 0
+              ? { organization: under("owner") }
+              : { creator: "owner" }
+            : { subagentOf: "owner" },
+        ),
+        ...state,
+      }));
+      const tree = buildSidebarThreadTree({
+        threads: [{ ...thread("root"), ...status({}) }, owner, ...pending],
+      });
+      const before = structuredClone([owner, ...pending]);
+      const summary = summarizeSidebarFamilyGroup(
+        tree,
+        key("root"),
+        subagents ? "subagents" : "ordinary",
+        (row) => row.id === "descendant-4",
+      );
+      expect(summary).toEqual({
+        sessionCount: 1,
+        otherSessionCount: 6,
+        projectCount: 1,
+        attentionCount: 2,
+        statuses: [
+          { status: "approval", count: 1 },
+          { status: "input", count: 1 },
+          { status: "failed", count: 1 },
+          { status: "unread", count: 1 },
+          { status: "working", count: 1 },
+          { status: "waiting", count: 1 },
+        ],
+      });
+      expect(
+        flattenSidebarFamily(tree, key("root"), {
+          isExpanded: () => false,
+          isSubagentsExpanded: () => false,
+          revealKey: null,
+        }),
+      ).toEqual([]);
+      expect(
+        flattenSidebarFamily(tree, key("root"), {
+          isExpanded: () => true,
+          isSubagentsExpanded: () => true,
+          revealKey: null,
+        }).map((row) => row.thread.id),
+      ).toEqual(["owner", ...pending.map((row) => row.id)]);
+      expect(sidebarNestedConversations(tree, key("root")).length).toBe(subagents ? 6 : 1);
+      expect([owner, ...pending]).toEqual(before);
+      expect(pending[0]?.sidebarOrganization).toEqual(subagents ? under("owner") : undefined);
+    }
+  });
 
   it("counts what needs the user apart from background work, worst first", () => {
     const finished = status({ projectId: ProjectId.make("project-b") });
@@ -635,9 +830,11 @@ describe("a recorded chain deeper than the tree", () => {
     thread("fork-4", { subagentOf: "fork-3" }),
   ];
   const depths = (tree: ReturnType<typeof build>, rootId: string) =>
-    flattenSidebarFamily(tree, key(rootId), { isExpanded: () => true, revealKey: null }).map(
-      (row) => [row.thread.id, row.depth],
-    );
+    flattenSidebarFamily(tree, key(rootId), {
+      isExpanded: () => true,
+      isSubagentsExpanded: () => true,
+      revealKey: null,
+    }).map((row) => [row.thread.id, row.depth]);
 
   it("keeps every row and draws the deeper ones as grandchildren", () => {
     const tree = build(chain);
