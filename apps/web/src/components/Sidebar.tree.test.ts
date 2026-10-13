@@ -1,5 +1,6 @@
 import { EnvironmentId, ProjectId, RunId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
+import { filterSidebarV2VisibleThreads } from "./Sidebar.logic";
 import {
   buildSidebarSearchRows,
   buildSidebarThreadTree,
@@ -80,6 +81,51 @@ const key = (id: string, environmentId = local) =>
   sidebarThreadKey({ environmentId, id: ThreadId.make(id) });
 
 describe("buildSidebarThreadTree", () => {
+  it("hides delegated rows while retaining ordinary agent tasks, parent fallback and search", () => {
+    const hiddenAgent = thread("agent", { subagentOf: "root" });
+    const movedAgent = thread("moved-agent", {
+      subagentOf: "root",
+      organization: { type: "top-level" },
+    });
+    const creatorTask = { ...thread("creator-task", { creator: "agent" }), createdBy: "agent" };
+    const manualTask = thread("manual-task", { organization: under("moved-agent") });
+    const ordinary = thread("ordinary", { creator: "root" });
+    const tree = build(
+      filterSidebarV2VisibleThreads(
+        [
+          thread("root"),
+          hiddenAgent,
+          movedAgent,
+          creatorTask,
+          manualTask,
+          ordinary,
+          thread("grandchild", { creator: "ordinary" }),
+        ],
+        null,
+      ),
+    );
+    expect(ids(tree.roots)).toEqual(["root", "creator-task", "manual-task"]);
+    expect(sidebarFamilyGroupKinds(tree, key("root"))).toEqual(["ordinary"]);
+    expect(sidebarFamilyGroupKinds(tree, key("creator-task"))).toBeNull();
+    expect(
+      flattenSidebarFamily(tree, key("root"), {
+        isExpanded: () => true,
+        isSubagentsExpanded: () => true,
+        revealKey: key("agent"),
+      }).map((row) => [row.thread.id, row.depth]),
+    ).toEqual([
+      ["ordinary", 1],
+      ["grandchild", 2],
+    ]);
+    expect(buildSidebarSearchRows(tree, [key("agent"), key("moved-agent")])).toEqual([]);
+    expect(
+      buildSidebarSearchRows(tree, [key("creator-task"), key("manual-task")]).map(
+        (row) => row.thread.id,
+      ),
+    ).toEqual(["creator-task", "manual-task"]);
+    expect(creatorTask.creatorThreadId).toBe("agent");
+    expect(manualTask.sidebarOrganization).toEqual(under("moved-agent"));
+  });
   it("nests forks and subagents under their recorded parent", () => {
     const tree = build([
       thread("root"),
@@ -786,6 +832,21 @@ describe("listSidebarMoveTargets", () => {
       "nested",
       ...many.map((candidate) => candidate.id),
     ]);
+  });
+
+  it("excludes delegated destinations even at the top level while keeping ordinary tasks", () => {
+    expect(
+      targets(
+        [
+          thread("moved"),
+          thread("root"),
+          thread("agent", { subagentOf: "root" }),
+          thread("top-agent", { subagentOf: "root", organization: { type: "top-level" } }),
+          thread("task", { creator: "root" }),
+        ],
+        "moved",
+      ),
+    ).toEqual(["root", "task"]);
   });
 
   it("leaves out the thread, its descendants, its current parent and other environments", () => {

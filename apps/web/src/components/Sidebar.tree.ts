@@ -583,7 +583,7 @@ export function canNestSidebarThreadUnder(
 
 /**
  * Every thread `childKey` may move under, for the "Move under" picker: any
- * unarchived thread in the same environment, nested or not and whatever its
+ * unarchived ordinary thread in the same environment, nested or not and whatever its
  * shelf, except the thread itself, its descendants, the parent it already
  * sits under, and any thread too deep to take it (see
  * canNestSidebarThreadUnder). An archived parent is left out because its
@@ -598,6 +598,7 @@ export function listSidebarMoveTargets<T extends SidebarStoredThread>(
   const currentParentKey = sidebarParentKey(child);
   return [...threadByKey].flatMap(([key, candidate]) =>
     candidate.archivedAt === null &&
+    !isSidebarSubagentThread(candidate) &&
     key !== currentParentKey &&
     canNestSidebarThreadUnder(threadByKey, childKey, key)
       ? [candidate]
