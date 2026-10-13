@@ -794,6 +794,26 @@ describe("orchestrator MCP toolkit", () => {
             yield* invoke("t3_thread_organize", { action: "unpin" });
             expect((yield* orchestrator.getThreadShell(parentThreadId))?.pinnedAt).toBeNull();
 
+            // Sidebar placement goes through the orchestrator's own checks:
+            // it names the refusal, and a refused move stores nothing.
+            const selfParent = yield* invoke("t3_thread_organize", {
+              action: "move_under",
+              parentThreadId,
+            });
+            expect(declaredFailure(selfParent)).toMatchObject({
+              code: "orchestration_error",
+              message: `Thread ${parentThreadId} cannot be its own sidebar parent.`,
+            });
+            const sidebarOrganization = orchestrator
+              .getThreadShell(parentThreadId)
+              .pipe(Effect.map((shell) => shell?.sidebarOrganization));
+            expect(yield* sidebarOrganization).toBeUndefined();
+            const topLevel = yield* invoke("t3_thread_organize", { action: "move_to_top_level" });
+            expect(topLevel.isError).toBe(false);
+            expect(yield* sidebarOrganization).toEqual({ type: "top-level" });
+            yield* invoke("t3_thread_organize", { action: "restore_recorded_parent" });
+            expect(yield* sidebarOrganization).toEqual({ type: "automatic" });
+
             if (parentRun === undefined || parentRun.rootNodeId === null) {
               return yield* Effect.die(new Error("Parent run missing."));
             }
@@ -2119,6 +2139,7 @@ describe("orchestrator MCP toolkit", () => {
               model: claudeModel,
             });
             const createdSource = yield* orchestrator.getThreadProjection(promptedThread.threadId);
+            expect(createdSource.thread.creatorThreadId).toBe(parentThreadId);
             expect(createdSource.messages[0]).toMatchObject({
               senderThreadId: parentThreadId,
             });
@@ -2136,6 +2157,7 @@ describe("orchestrator MCP toolkit", () => {
             expect(emptyProjection.thread).toMatchObject({
               createdBy: "agent",
               creationSource: "mcp",
+              creatorThreadId: parentThreadId,
             });
             expect(emptyProjection.thread.forkedFrom).toBeNull();
             expect(emptyProjection.runs).toEqual([]);

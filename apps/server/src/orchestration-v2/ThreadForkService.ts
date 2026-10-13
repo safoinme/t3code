@@ -97,6 +97,9 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
             relationshipToParent: "fork",
             rootThreadId: input.sourceProjection.thread.lineage.rootThreadId,
           },
+          // Where the user put the source in the sidebar is not the fork's
+          // placement: the fork starts under the thread it came from.
+          sidebarOrganization: undefined,
           forkedFrom: {
             type: "run",
             threadId: input.sourceProjection.thread.id,

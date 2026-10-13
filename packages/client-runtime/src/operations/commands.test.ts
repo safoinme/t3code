@@ -47,9 +47,11 @@ import {
   interruptThreadTurn,
   mergeThreadBack,
   promoteQueuedRun,
+  createThread,
   reorderActiveThread,
   reorderQueuedRun,
   revertThreadCheckpoint,
+  setThreadSidebarOrganization,
   settleThread,
   startThreadTurn,
   unsettleThread,
@@ -936,6 +938,57 @@ describe("V2 environment commands", () => {
           orderKey: "mf",
         },
       ]);
+    }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
+  it.effect("sends a sidebar placement and creates a subthread under its parent", () =>
+    Effect.gen(function* () {
+      const dispatched: OrchestrationV2Command[] = [];
+      const supervisor = yield* makeSupervisor({ commands: dispatched, projects: [] });
+      const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" };
+      yield* Effect.gen(function* () {
+        yield* setThreadSidebarOrganization({
+          commandId: CommandId.make("organize-command"),
+          threadId: ThreadId.make("thread-1"),
+          organization: { type: "parent", threadId: ThreadId.make("thread-2") },
+        });
+        yield* createThread({
+          commandId: CommandId.make("subthread-command"),
+          threadId: ThreadId.make("thread-3"),
+          projectId: ProjectId.make("project-1"),
+          title: "New thread",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: "feature/tree",
+          worktreePath: null,
+          sidebarParentThreadId: ThreadId.make("thread-2"),
+        });
+        // A plain new thread never names a parent, so it cannot inherit one.
+        yield* createThread({
+          commandId: CommandId.make("thread-command"),
+          threadId: ThreadId.make("thread-4"),
+          projectId: ProjectId.make("project-1"),
+          title: "New thread",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+        });
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+      expect(dispatched[0]).toEqual({
+        type: "thread.sidebar-organization.set",
+        commandId: "organize-command",
+        threadId: "thread-1",
+        organization: { type: "parent", threadId: "thread-2" },
+      });
+      expect(dispatched[1]).toMatchObject({
+        type: "thread.create",
+        threadId: "thread-3",
+        sidebarParentThreadId: "thread-2",
+      });
+      expect(dispatched[2]).not.toHaveProperty("sidebarParentThreadId");
     }).pipe(Effect.provide(layerTestCrypto)),
   );
 

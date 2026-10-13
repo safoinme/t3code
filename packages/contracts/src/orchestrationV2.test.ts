@@ -43,6 +43,7 @@ import {
   OrchestrationV2ThreadShell,
   OrchestrationV2TurnItem,
   OrchestrationV2TurnItemJson,
+  resolveSidebarParentThreadId,
 } from "./orchestrationV2.ts";
 
 const now = DateTime.makeUnsafe("2026-04-20T00:00:00.000Z");
@@ -1566,5 +1567,82 @@ describe("latestProviderTurnForAttempt", () => {
     ];
     expect(latestProviderTurnForAttempt(turns, RunAttemptId.make("goal-attempt"))?.id).toBe("last");
     expect(latestProviderTurnForAttempt(turns, null)).toBeUndefined();
+  });
+});
+
+describe("sidebar organization", () => {
+  const decodeCommand = Schema.decodeUnknownSync(OrchestrationV2Command);
+  const lineage = (parentThreadId: string | null, relationship: "fork" | "subagent" | null) => ({
+    parentThreadId: parentThreadId === null ? null : ThreadId.make(parentThreadId),
+    relationshipToParent: relationship,
+    rootThreadId: ThreadId.make(parentThreadId ?? "thread-1"),
+  });
+
+  it("follows the recorded parent until the user chooses otherwise", () => {
+    const subagent = { lineage: lineage("parent", "subagent"), forkedFrom: null };
+    // A run fork nests under the thread it branched from, which lineage may not name.
+    const runFork = {
+      lineage: lineage("lineage-parent", "fork"),
+      forkedFrom: {
+        type: "run" as const,
+        threadId: ThreadId.make("source"),
+        runId: RunId.make("run-1"),
+      },
+    };
+
+    expect(resolveSidebarParentThreadId(subagent)).toBe("parent");
+    expect(resolveSidebarParentThreadId(runFork)).toBe("source");
+    expect(
+      resolveSidebarParentThreadId({ ...runFork, sidebarOrganization: { type: "automatic" } }),
+    ).toBe("source");
+    expect(
+      resolveSidebarParentThreadId({ ...runFork, sidebarOrganization: { type: "top-level" } }),
+    ).toBeNull();
+    expect(
+      resolveSidebarParentThreadId({
+        ...subagent,
+        sidebarOrganization: { type: "parent", threadId: ThreadId.make("chosen") },
+      }),
+    ).toBe("chosen");
+    expect(
+      resolveSidebarParentThreadId({ lineage: lineage(null, null), forkedFrom: null }),
+    ).toBeNull();
+    const task = {
+      lineage: lineage(null, null),
+      forkedFrom: null,
+      creatorThreadId: ThreadId.make("creator"),
+    };
+    expect(resolveSidebarParentThreadId(task)).toBe("creator");
+    expect(
+      resolveSidebarParentThreadId({ ...task, sidebarOrganization: { type: "top-level" } }),
+    ).toBeNull();
+    expect(
+      resolveSidebarParentThreadId({
+        ...task,
+        sidebarOrganization: { type: "parent", threadId: ThreadId.make("chosen") },
+      }),
+    ).toBe("chosen");
+    expect(
+      resolveSidebarParentThreadId({ ...subagent, creatorThreadId: ThreadId.make("creator") }),
+    ).toBe("parent");
+  });
+
+  it("decodes the three placements and rejects one it cannot store", () => {
+    const command = (organization: unknown) => ({
+      type: "thread.sidebar-organization.set",
+      commandId: "command-1",
+      threadId: "thread-1",
+      organization,
+    });
+
+    for (const organization of [
+      { type: "automatic" },
+      { type: "top-level" },
+      { type: "parent", threadId: "thread-2" },
+    ]) {
+      expect(decodeCommand(command(organization))).toMatchObject({ organization });
+    }
+    expect(() => decodeCommand(command({ type: "parent" }))).toThrow();
+    expect(() => decodeCommand(command({ type: "folder", name: "Later" }))).toThrow();
   });
 });

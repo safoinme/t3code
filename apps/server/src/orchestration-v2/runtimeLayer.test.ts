@@ -32,6 +32,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
@@ -75,6 +76,7 @@ import { shellStreamItemFromThreadShell } from "./ShellStream.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
+import * as ThreadSidebarOrganization from "./ThreadSidebarOrganization.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const layerPlatformTest = Layer.merge(
@@ -272,6 +274,7 @@ const layerTest = Layer.mergeAll(
   ProjectionStore.layer,
   EffectOutbox.layer,
   ThreadCommandExecutor.layer,
+  ThreadSidebarOrganization.layerLock,
 ).pipe(
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(McpProviderSessions.layer),
@@ -2028,6 +2031,323 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       const unlinkedShell = yield* orchestrator.getThreadShell(threadId);
       assert.isNotNull(unlinkedShell);
       assert.isNull(unlinkedShell.linkedPullRequest);
+    }),
+  );
+
+  it.effect("stores sidebar organization apart from lineage and rejects invalid parents", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+      const rootId = ThreadId.make("runtime-layer-sidebar-root");
+      const subthreadId = ThreadId.make("runtime-layer-sidebar-subthread");
+      const otherId = ThreadId.make("runtime-layer-sidebar-other");
+      const create = (threadId: ThreadId, projectId: string) => ({
+        type: "thread.create" as const,
+        createdBy: "user" as const,
+        creationSource: "web" as const,
+        commandId: CommandId.make(`runtime-layer-sidebar-create-${threadId}`),
+        threadId,
+        projectId: ProjectId.make(projectId),
+        title: `Sidebar ${threadId}`,
+        modelSelection,
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        branch: "feature/sidebar",
+        worktreePath: "/tmp/t3-sidebar-worktree",
+      });
+      const organize = (
+        commandId: string,
+        threadId: ThreadId,
+        organization:
+          | { readonly type: "automatic" | "top-level" }
+          | { readonly type: "parent"; readonly threadId: ThreadId },
+      ) =>
+        orchestrator.dispatch({
+          type: "thread.sidebar-organization.set",
+          commandId: CommandId.make(`runtime-layer-sidebar-${commandId}`),
+          threadId,
+          organization,
+        });
+      const thread = (threadId: ThreadId) =>
+        orchestrator
+          .getThreadProjection(threadId)
+          .pipe(Effect.map((projection) => projection.thread));
+
+      yield* orchestrator.dispatch(create(rootId, "runtime-layer-sidebar-project-a"));
+      yield* orchestrator.dispatch(create(otherId, "runtime-layer-sidebar-project-b"));
+      // A thread from before sidebar trees carries no organization at all.
+      assert.isUndefined((yield* thread(rootId)).sidebarOrganization);
+      assert.isUndefined((yield* orchestrator.getThreadShell(rootId))?.sidebarOrganization);
+
+      // New subthread: a separate conversation whose only tie is the sidebar.
+      yield* orchestrator.dispatch({
+        ...create(subthreadId, "runtime-layer-sidebar-project-a"),
+        sidebarParentThreadId: rootId,
+      });
+      const subthread = yield* thread(subthreadId);
+      assert.deepEqual(subthread.sidebarOrganization, { type: "parent", threadId: rootId });
+      assert.deepEqual(subthread.lineage, {
+        parentThreadId: null,
+        relationshipToParent: null,
+        rootThreadId: subthreadId,
+      });
+      assert.isNull(subthread.forkedFrom);
+      for (const [name, sidebarParentThreadId] of [
+        ["missing", ThreadId.make("runtime-layer-sidebar-missing")],
+        ["self", ThreadId.make("runtime-layer-sidebar-self")],
+      ] as const) {
+        const rejected = yield* orchestrator
+          .dispatch({
+            ...create(
+              ThreadId.make("runtime-layer-sidebar-self"),
+              "runtime-layer-sidebar-project-a",
+            ),
+            commandId: CommandId.make(`runtime-layer-sidebar-create-rejected-${name}`),
+            sidebarParentThreadId,
+          })
+          .pipe(Effect.flip);
+        assert.instanceOf(rejected, Orchestrator.OrchestratorDispatchError);
+      }
+      assert.isNull(
+        yield* orchestrator.getThreadShell(ThreadId.make("runtime-layer-sidebar-self")),
+      );
+
+      // Moving across projects changes the placement and nothing else. It is
+      // not activity, so neither the thread nor its shell looks freshly updated.
+      const otherBefore = yield* thread(otherId);
+      const otherShellBefore = yield* orchestrator.getThreadShell(otherId);
+      const move = yield* organize("move", otherId, { type: "parent", threadId: subthreadId });
+      const otherMoved = yield* thread(otherId);
+      assert.deepEqual(otherMoved, {
+        ...otherBefore,
+        sidebarOrganization: { type: "parent", threadId: subthreadId },
+      });
+      const otherShellMoved = yield* orchestrator.getThreadShell(otherId);
+      assert.deepEqual(otherShellMoved, {
+        ...otherShellBefore!,
+        sidebarOrganization: { type: "parent", threadId: subthreadId },
+      });
+      // Connected clients hear about the move as an ordinary shell update.
+      assert.deepEqual(
+        shellStreamItemFromThreadShell({
+          stored: move.storedEvents[0]!,
+          shell: otherShellMoved,
+        }),
+        {
+          kind: "thread.updated",
+          sequence: move.sequence,
+          location: "active",
+          thread: otherShellMoved!,
+        },
+      );
+
+      for (const [name, threadId, parentThreadId] of [
+        ["self", rootId, rootId],
+        ["cycle", rootId, otherId],
+        ["missing", rootId, ThreadId.make("runtime-layer-sidebar-missing")],
+      ] as const) {
+        const rejected = yield* organize(`rejected-${name}`, threadId, {
+          type: "parent",
+          threadId: parentThreadId,
+        }).pipe(Effect.flip);
+        assert.instanceOf(rejected, Orchestrator.OrchestratorDispatchError);
+      }
+      assert.isUndefined((yield* thread(rootId)).sidebarOrganization);
+
+      const rebuilt = yield* maintenance.rebuild;
+      assert.isTrue(rebuilt.valid);
+      assert.deepEqual((yield* thread(otherId)).sidebarOrganization, {
+        type: "parent",
+        threadId: subthreadId,
+      });
+
+      // The way back: top level, then the recorded relationship.
+      yield* organize("top-level", otherId, { type: "top-level" });
+      assert.deepEqual((yield* thread(otherId)).sidebarOrganization, { type: "top-level" });
+      yield* organize("automatic", subthreadId, { type: "automatic" });
+      assert.deepEqual((yield* thread(subthreadId)).sidebarOrganization, { type: "automatic" });
+      // With both links cut, the move that would have closed a cycle is valid.
+      yield* organize("after-reset", rootId, { type: "parent", threadId: otherId });
+      assert.deepEqual((yield* thread(rootId)).sidebarOrganization, {
+        type: "parent",
+        threadId: otherId,
+      });
+    }),
+  );
+
+  const sidebarMove = (name: string, threadId: ThreadId, parentThreadId: ThreadId) => ({
+    type: "thread.sidebar-organization.set" as const,
+    commandId: CommandId.make(`runtime-layer-sidebar-${name}-move-${threadId}`),
+    threadId,
+    organization: { type: "parent" as const, threadId: parentThreadId },
+  });
+  const createSidebarThread = (name: string, threadId: ThreadId, parentThreadId?: ThreadId) => ({
+    type: "thread.create" as const,
+    createdBy: "user" as const,
+    creationSource: "web" as const,
+    commandId: CommandId.make(`runtime-layer-sidebar-${name}-create-${threadId}`),
+    threadId,
+    projectId: ProjectId.make(`runtime-layer-sidebar-${name}-project`),
+    title: `${name} ${threadId}`,
+    modelSelection,
+    runtimeMode: "full-access" as const,
+    interactionMode: "default" as const,
+    branch: null,
+    worktreePath: null,
+    ...(parentThreadId === undefined ? {} : { sidebarParentThreadId: parentThreadId }),
+  });
+
+  // Runs two sidebar moves that each pass validation on the graph as it
+  // stands. The first stops just before its commit; the second must then be
+  // waiting on the organization lock, so it validates against the first
+  // move's result. Returns the second move's exit.
+  const raceSidebarMoves = Effect.fn("raceSidebarMoves")(function* (
+    firstMove: ReturnType<typeof sidebarMove>,
+    secondMove: ReturnType<typeof sidebarMove>,
+  ) {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const eventSink = yield* EventSink.EventSinkV2;
+    const organizationLock = yield* ThreadSidebarOrganization.ThreadSidebarOrganizationLock;
+    const firstValidated = yield* Deferred.make<void>();
+    const releaseFirst = yield* Deferred.make<void>();
+    const secondQueued = yield* Deferred.make<void>();
+    const commitCommand = eventSink.commitCommand;
+    const withLock = organizationLock.withLock;
+    let organizationLockRequests = 0;
+    const commitSpy = vi
+      .spyOn(eventSink, "commitCommand")
+      .mockImplementation((input) =>
+        input.commandId === firstMove.commandId
+          ? Deferred.succeed(firstValidated, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseFirst)),
+              Effect.andThen(commitCommand(input)),
+            )
+          : commitCommand(input),
+      );
+    const observeLock: typeof withLock = (effect) =>
+      ++organizationLockRequests === 2
+        ? Deferred.succeed(secondQueued, undefined).pipe(Effect.andThen(withLock(effect)))
+        : withLock(effect);
+    const lockSpy = vi.spyOn(organizationLock, "withLock").mockImplementation(observeLock);
+    return yield* Effect.gen(function* () {
+      const firstFiber = yield* orchestrator
+        .dispatch(firstMove)
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Effect.raceFirst(
+        Deferred.await(firstValidated),
+        Fiber.join(firstFiber).pipe(
+          Effect.andThen(Effect.die("The first move finished before its commit barrier.")),
+        ),
+      );
+      const secondFiber = yield* orchestrator
+        .dispatch(secondMove)
+        .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+      yield* Effect.raceFirst(
+        Deferred.await(secondQueued),
+        Fiber.join(secondFiber).pipe(
+          Effect.andThen(Effect.die("The second move did not wait for the first to commit.")),
+        ),
+      );
+      yield* Deferred.succeed(releaseFirst, undefined);
+      yield* Fiber.join(firstFiber);
+      return yield* Fiber.join(secondFiber);
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          commitSpy.mockRestore();
+          lockSpy.mockRestore();
+        }),
+      ),
+    );
+  });
+
+  it.effect("lets only one of two crossing sidebar moves commit", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const firstId = ThreadId.make("runtime-layer-sidebar-crossing-first");
+      const secondId = ThreadId.make("runtime-layer-sidebar-crossing-second");
+      for (const threadId of [firstId, secondId]) {
+        yield* orchestrator.dispatch(createSidebarThread("crossing", threadId));
+      }
+
+      // The second move arrives while the first move's cycle check is stale.
+      const second = yield* raceSidebarMoves(
+        sidebarMove("crossing", firstId, secondId),
+        sidebarMove("crossing", secondId, firstId),
+      );
+
+      assert.isTrue(Exit.isFailure(second));
+      const first = (yield* orchestrator.getThreadProjection(firstId)).thread;
+      const other = (yield* orchestrator.getThreadProjection(secondId)).thread;
+      assert.deepEqual(first.sidebarOrganization, { type: "parent", threadId: secondId });
+      assert.isUndefined(other.sidebarOrganization);
+    }),
+  );
+
+  it.effect("keeps new subthreads and moved subtrees within three sidebar levels", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const id = (name: string) => ThreadId.make(`runtime-layer-sidebar-depth-${name}`);
+      const placement = (threadId: ThreadId) =>
+        orchestrator
+          .getThreadProjection(threadId)
+          .pipe(Effect.map(({ thread }) => thread.sidebarOrganization));
+
+      // root > child > grandchild is as deep as a new subthread goes.
+      yield* orchestrator.dispatch(createSidebarThread("depth", id("root")));
+      yield* orchestrator.dispatch(createSidebarThread("depth", id("child"), id("root")));
+      yield* orchestrator.dispatch(createSidebarThread("depth", id("grandchild"), id("child")));
+      const tooDeep = yield* orchestrator
+        .dispatch(createSidebarThread("depth", id("too-deep"), id("grandchild")))
+        .pipe(Effect.flip);
+      assert.instanceOf(tooDeep, Orchestrator.OrchestratorDispatchError);
+      assert.isNull(yield* orchestrator.getThreadShell(id("too-deep")));
+
+      // A thread moves with what is nested under it.
+      yield* orchestrator.dispatch(createSidebarThread("depth", id("other")));
+      yield* orchestrator.dispatch(createSidebarThread("depth", id("other-child"), id("other")));
+      const overflow = yield* orchestrator
+        .dispatch(sidebarMove("depth-overflow", id("other"), id("child")))
+        .pipe(Effect.flip);
+      assert.instanceOf(overflow, Orchestrator.OrchestratorDispatchError);
+      assert.isUndefined(yield* placement(id("other")));
+      yield* orchestrator.dispatch(sidebarMove("depth-fits", id("other"), id("root")));
+      assert.deepEqual(yield* placement(id("other")), { type: "parent", threadId: id("root") });
+
+      // An archived thread is not drawn, so it does not count as nested.
+      yield* orchestrator.dispatch({
+        type: "thread.archive",
+        commandId: CommandId.make("runtime-layer-sidebar-depth-archive"),
+        threadId: id("other-child"),
+      });
+      yield* orchestrator.dispatch(sidebarMove("depth-archived", id("other"), id("child")));
+      assert.deepEqual(yield* placement(id("other")), { type: "parent", threadId: id("child") });
+    }),
+  );
+
+  it.effect("holds two sidebar moves that only overflow together to the depth limit", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const id = (name: string) => ThreadId.make(`runtime-layer-sidebar-depth-race-${name}`);
+      for (const name of ["root", "middle", "moved"]) {
+        yield* orchestrator.dispatch(createSidebarThread("depth-race", id(name)));
+      }
+      yield* orchestrator.dispatch(
+        createSidebarThread("depth-race", id("moved-child"), id("moved")),
+      );
+
+      // middle > moved > moved-child fits, and so does root > middle while
+      // middle is alone. Both together would put moved-child on a fourth level.
+      const second = yield* raceSidebarMoves(
+        sidebarMove("depth-race", id("moved"), id("middle")),
+        sidebarMove("depth-race", id("middle"), id("root")),
+      );
+
+      assert.isTrue(Exit.isFailure(second));
+      const moved = (yield* orchestrator.getThreadProjection(id("moved"))).thread;
+      const middle = (yield* orchestrator.getThreadProjection(id("middle"))).thread;
+      assert.deepEqual(moved.sidebarOrganization, { type: "parent", threadId: id("middle") });
+      assert.isUndefined(middle.sidebarOrganization);
     }),
   );
 

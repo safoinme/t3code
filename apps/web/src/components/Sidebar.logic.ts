@@ -166,8 +166,36 @@ export function sidebarMarkerId(marker: SidebarListMarker): string {
   return `${SIDEBAR_MARKER_PREFIX}${marker}`;
 }
 
+/**
+ * How a thread row is drawn. Cards are the three-line rows of live roots.
+ * Compact is the two-line row of every nested thread and every snoozed or
+ * settled root. Both show the thread's project, branch, pull request and
+ * provider at rest. The list and the drag preview both ask here, so the
+ * preview sizes a row the way the list draws it.
+ */
+export type SidebarRowVariant = "card" | "compact";
+
+export function resolveSidebarRowVariant(input: {
+  /** The thread's own section. */
+  readonly section: SidebarSection;
+  /** Drawn under a parent. */
+  readonly nested: boolean;
+}): SidebarRowVariant {
+  return !input.nested &&
+    (input.section === "pinned" || input.section === "active" || input.section === "working")
+    ? "card"
+    : "compact";
+}
+
 export type SidebarListItem =
-  | { readonly kind: "thread"; readonly key: string; readonly section: SidebarSection }
+  | {
+      readonly kind: "thread";
+      readonly key: string;
+      readonly section: SidebarSection;
+      /** Set on a family root: its list item also holds this many nested
+          lines, so its measured height is not that of one row. */
+      readonly nestedLineCount?: number;
+    }
   | { readonly kind: "marker"; readonly marker: SidebarListMarker };
 
 export function sidebarListItemId(item: SidebarListItem): string {
@@ -259,8 +287,67 @@ export type SidebarThreadDropPlan =
 
 /** What dropping in `to` does to a thread lifted from `from`, for the badge
     on the lifted row. Null while reordering inside one section and for the
-    working and snoozed shelves, which cannot be drop targets. */
-export type SidebarDropVerb = "pin" | "unpin" | "settle" | "unsettle" | "wake";
+    working and snoozed shelves, which cannot be drop targets. The two nest
+    verbs are not section moves (see resolveSidebarNestDrag): "nest" puts the
+    thread under the row it is held over, and "nest-cancel" says a release
+    here changes nothing, because no row under the pointer can take it. */
+export type SidebarDropVerb =
+  | "pin"
+  | "unpin"
+  | "settle"
+  | "unsettle"
+  | "wake"
+  | "nest"
+  | "nest-cancel";
+
+// Wide enough that a vertical reorder does not drift into it.
+const SIDEBAR_NEST_DRAG_INDENT = 56;
+
+/**
+ * Whether a drag means "move under a row" instead of a reorder or lifecycle
+ * drop, and which row would take the thread. Null is an ordinary drag: the
+ * pointer has not travelled far enough right of its pickup point, or the
+ * thread's server cannot store a placement (`supported` false), in which case
+ * the gesture never arms and the drop keeps reordering as it always did.
+ *
+ * While this is non-null the caller turns the reorder preview off, so the two
+ * never mix: rows return to rest, `hoveredKey` is the row under the pointer,
+ * and the drop is a move under `targetKey` or, when that is null, nothing.
+ */
+export function resolveSidebarNestDrag(input: {
+  readonly supported: boolean;
+  readonly activationX: number;
+  readonly pointX: number;
+  readonly hoveredKey: string | null;
+  readonly canNestUnder: (targetKey: string) => boolean;
+}): { readonly targetKey: string | null } | null {
+  if (!input.supported || input.pointX - input.activationX < SIDEBAR_NEST_DRAG_INDENT) return null;
+  return {
+    targetKey:
+      input.hoveredKey !== null && input.canNestUnder(input.hoveredKey) ? input.hoveredKey : null,
+  };
+}
+
+/**
+ * The row a nest drag is held over, or null on a gap or a section label.
+ * Rows of the lifted family are never targets. Read while the reorder preview
+ * is off: a row displaced by the preview is not under the pointer it left.
+ */
+export function sidebarNestTargetKeyAtPoint(
+  list: HTMLElement,
+  draggedKey: string,
+  point: { readonly y: number },
+): string | null {
+  for (const row of list.querySelectorAll<HTMLElement>("li[data-thread-item]")) {
+    const key = row.dataset.threadItem;
+    if (key === undefined || key === draggedKey) continue;
+    if (row.closest<HTMLElement>("[data-thread-family]")?.dataset.threadFamily === draggedKey)
+      continue;
+    const rect = row.getBoundingClientRect();
+    if (point.y >= rect.top && point.y < rect.bottom) return key;
+  }
+  return null;
+}
 
 export function resolveSidebarDropVerb(
   from: SidebarSection,

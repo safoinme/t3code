@@ -60,6 +60,8 @@ import {
   type SidebarListMarker,
   type SidebarSection,
   resolveSidebarDropVerb,
+  resolveSidebarNestDrag,
+  sidebarNestTargetKeyAtPoint,
 } from "./Sidebar.logic";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { sortSettledThreads } from "@t3tools/client-runtime/state/thread-sort";
@@ -2336,5 +2338,64 @@ describe("Working shelf (beta)", () => {
         unsnooze: false,
       });
     });
+  });
+});
+
+describe("nest drag", () => {
+  // Rows as the list renders them: a lone row, then a family whose wrapper
+  // holds its root row and one nested row.
+  function row(key: string, top: number, family: string | null = null) {
+    return {
+      dataset: { threadItem: key },
+      closest: () => (family === null ? null : { dataset: { threadFamily: family } }),
+      getBoundingClientRect: () => ({ top, bottom: top + 36 }),
+    };
+  }
+  const list = {
+    querySelectorAll: () => [
+      row("env:lone", 0),
+      row("env:root", 40, "env:root"),
+      row("env:child", 76, "env:root"),
+    ],
+  } as unknown as HTMLElement;
+
+  const nestDrag = (overrides: Partial<Parameters<typeof resolveSidebarNestDrag>[0]> = {}) =>
+    resolveSidebarNestDrag({
+      supported: true,
+      activationX: 100,
+      pointX: 160,
+      hoveredKey: "env:root",
+      canNestUnder: () => true,
+      ...overrides,
+    });
+
+  it("stays a reorder until the pointer travels well to the right of the pickup point", () => {
+    expect(nestDrag({ pointX: 100 })).toBeNull();
+    expect(nestDrag({ pointX: 130 })).toBeNull();
+    expect(nestDrag({ pointX: 60 })).toBeNull();
+    expect(nestDrag()).toEqual({ targetKey: "env:root" });
+  });
+
+  it("never arms against a server that cannot store a placement, so the drop still reorders", () => {
+    expect(nestDrag({ supported: false })).toBeNull();
+    expect(nestDrag({ supported: false, pointX: 400 })).toBeNull();
+  });
+
+  it("arms without a target over a gap or a row that cannot take the thread", () => {
+    expect(nestDrag({ hoveredKey: null })).toEqual({ targetKey: null });
+    expect(nestDrag({ canNestUnder: () => false })).toEqual({ targetKey: null });
+  });
+
+  it("targets the row under the pointer, nested rows included, and nothing in a gap", () => {
+    expect(sidebarNestTargetKeyAtPoint(list, "env:lone", { y: 50 })).toBe("env:root");
+    expect(sidebarNestTargetKeyAtPoint(list, "env:lone", { y: 80 })).toBe("env:child");
+    expect(sidebarNestTargetKeyAtPoint(list, "env:lone", { y: 38 })).toBeNull();
+  });
+
+  it("never targets the lifted row or a row nested in the lifted family", () => {
+    expect(sidebarNestTargetKeyAtPoint(list, "env:lone", { y: 10 })).toBeNull();
+    expect(sidebarNestTargetKeyAtPoint(list, "env:root", { y: 50 })).toBeNull();
+    expect(sidebarNestTargetKeyAtPoint(list, "env:root", { y: 80 })).toBeNull();
+    expect(sidebarNestTargetKeyAtPoint(list, "env:root", { y: 10 })).toBe("env:lone");
   });
 });

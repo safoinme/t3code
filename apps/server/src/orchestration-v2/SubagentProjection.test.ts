@@ -64,6 +64,8 @@ function makeParentThread(): OrchestrationV2AppThread {
       relationshipToParent: null,
       rootThreadId: parentThreadId,
     },
+    // The user moved the parent in the sidebar; its subagent must not inherit that.
+    sidebarOrganization: { type: "top-level" },
     forkedFrom: null,
     createdAt: parentCreatedAt,
     updatedAt: snoozedAt,
@@ -106,6 +108,7 @@ it("keeps a subagent child awake when its parent thread is snoozed", () => {
   assert.deepEqual(childThread.modelSelection, childModelSelection);
   assert.equal(childThread.activeProviderThreadId, childProviderThreadId);
   assert.isUndefined(childThread.historyOrigin);
+  assert.isUndefined(childThread.sidebarOrganization);
   assert.deepEqual(childThread.lineage, {
     parentThreadId,
     relationshipToParent: "subagent",

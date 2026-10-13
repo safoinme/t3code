@@ -49,6 +49,8 @@ function makeSourceThread(): OrchestrationV2AppThread {
       relationshipToParent: null,
       rootThreadId: sourceThreadId,
     },
+    // The user moved the source in the sidebar; its fork must not inherit that.
+    sidebarOrganization: { type: "top-level" },
     forkedFrom: null,
     createdAt: sourceCreatedAt,
     updatedAt: snoozedAt,
@@ -155,6 +157,7 @@ it.effect("keeps a fork awake when its source thread is snoozed", () =>
     assert.equal(result.targetThread.branch, sourceThread.branch);
     assert.equal(result.targetThread.worktreePath, sourceThread.worktreePath);
     assert.isNull(result.targetThread.activeProviderThreadId);
+    assert.isUndefined(result.targetThread.sidebarOrganization);
     assert.deepEqual(result.targetThread.lineage, {
       parentThreadId: sourceThreadId,
       relationshipToParent: "fork",

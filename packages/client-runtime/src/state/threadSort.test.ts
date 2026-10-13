@@ -511,3 +511,74 @@ describe("sortActiveThreadsByOrderKey", () => {
     expect(sortActiveThreadsByOrderKey(updated).map((thread) => thread.id)).toEqual(orderedIds);
   });
 });
+
+describe("ranking a row by its family", () => {
+  type ActiveThread = Parameters<typeof sortActiveThreadsByOrderKey>[0][number];
+  // The sidebar nests `child` under `root`: the root's row stands for both.
+  const familyOf =
+    <T extends { readonly id: string }>(family: Record<string, readonly T[]>) =>
+    (thread: T) =>
+      family[thread.id] ?? [];
+  const activeIds = (
+    threads: readonly ActiveThread[],
+    family: Record<string, readonly ActiveThread[]> = {},
+  ) => sortActiveThreadsByOrderKey(threads, familyOf(family)).map((thread) => thread.id);
+
+  it("leads the active list with a root whose nested thread was just created or reopened", () => {
+    const root = { id: "root", createdAt: "2026-03-01T09:00:00.000Z" };
+    const other = { id: "other", createdAt: "2026-03-05T09:00:00.000Z" };
+    const child = { id: "child", createdAt: "2026-03-09T09:00:00.000Z" };
+    const reopened = {
+      id: "reopened",
+      createdAt: "2026-02-01T09:00:00.000Z",
+      unsettledAt: "2026-03-10T09:00:00.000Z",
+    };
+
+    expect(activeIds([root, other])).toEqual(["other", "root"]);
+    expect(activeIds([root, other], { root: [child] })).toEqual(["root", "other"]);
+    expect(activeIds([root, other], { root: [child], other: [reopened] })).toEqual([
+      "other",
+      "root",
+    ]);
+  });
+
+  it("does not move a root for a nested thread's status or update time", () => {
+    // The active list sorts on creation and reopening only, so a child that
+    // merely runs, waits or changes status carries nothing that reorders it.
+    const root = { id: "root", createdAt: "2026-03-01T09:00:00.000Z" };
+    const other = { id: "other", createdAt: "2026-03-05T09:00:00.000Z" };
+    const busyChild = {
+      id: "child",
+      createdAt: "2026-02-01T09:00:00.000Z",
+      updatedAt: "2026-03-20T09:00:00.000Z",
+    };
+
+    expect(activeIds([root, other], { root: [busyChild] })).toEqual(["other", "root"]);
+  });
+
+  it("leaves a root the user arranged where they put it, whatever its family does", () => {
+    const arranged = { id: "arranged", createdAt: "2026-03-01T09:00:00.000Z", activeOrderKey: "f" };
+    const later = { id: "later", createdAt: "2026-03-02T09:00:00.000Z", activeOrderKey: "t" };
+    const child = { id: "child", createdAt: "2026-03-09T09:00:00.000Z", activeOrderKey: null };
+
+    expect(activeIds([later, arranged], { later: [child] })).toEqual(["arranged", "later"]);
+  });
+
+  it("orders settled families by the last conversation in them to end", () => {
+    const settled = (id: string, settledAt: string) => ({
+      id,
+      settledAt,
+      latestUserMessageAt: null,
+      latestRun: null,
+      updatedAt: "2026-03-09T09:00:00.000Z",
+    });
+    const root = settled("root", "2026-03-01T09:00:00.000Z");
+    const other = settled("other", "2026-03-05T09:00:00.000Z");
+    const child = settled("child", "2026-03-09T09:00:00.000Z");
+
+    expect(sortSettledThreads([root, other]).map((thread) => thread.id)).toEqual(["other", "root"]);
+    expect(
+      sortSettledThreads([root, other], familyOf({ root: [child] })).map((thread) => thread.id),
+    ).toEqual(["root", "other"]);
+  });
+});

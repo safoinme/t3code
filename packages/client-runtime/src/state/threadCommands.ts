@@ -42,6 +42,7 @@ import {
   type ReorderPinnedThreadInput,
   type ReorderActiveThreadInput,
   type SetThreadAutoSettleInput,
+  type SetThreadSidebarOrganizationInput,
   type SettleThreadInput,
   type SnoozeThreadInput,
   type StartThreadTurnInput,
@@ -78,6 +79,7 @@ import {
   reorderPinnedThread,
   reorderActiveThread,
   setThreadAutoSettle,
+  setThreadSidebarOrganization,
   settleThread,
   snoozeThread,
   startThreadTurn,
@@ -123,6 +125,7 @@ export type {
   ReorderPinnedThreadInput,
   ReorderActiveThreadInput,
   SetThreadAutoSettleInput,
+  SetThreadSidebarOrganizationInput,
   SettleThreadInput,
   SnoozeThreadInput,
   StartThreadTurnInput,
@@ -224,6 +227,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     reorderActive: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:reorder-active",
       execute: (input: ReorderActiveThreadInput) => reorderActiveThread(input),
+      scheduler,
+      concurrency,
+    }),
+    setSidebarOrganization: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:set-sidebar-organization",
+      execute: (input: SetThreadSidebarOrganizationInput) => setThreadSidebarOrganization(input),
       scheduler,
       concurrency,
     }),
@@ -484,6 +493,10 @@ export function createThreadEnvironmentAtoms<R, E>(
     reorderActive: optimistic.wrap(commands.reorderActive, (thread, input) => ({
       ...thread,
       activeOrderKey: input.orderKey,
+    })),
+    setSidebarOrganization: optimistic.wrap(commands.setSidebarOrganization, (thread, input) => ({
+      ...thread,
+      sidebarOrganization: input.organization,
     })),
   };
 }
