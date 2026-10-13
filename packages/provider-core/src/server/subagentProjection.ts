@@ -71,6 +71,9 @@ export function makeSubagentChildThread(input: {
       relationshipToParent: "subagent",
       rootThreadId: input.parentThread.lineage.rootThreadId,
     },
+    // Where the user put the parent in the sidebar is not the subagent's
+    // placement: the subagent starts under the thread that spawned it.
+    sidebarOrganization: undefined,
     forkedFrom: {
       type: "node",
       nodeId: input.parentNodeId,

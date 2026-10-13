@@ -36,6 +36,7 @@ import {
 } from "../state/entities";
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { readLocalApi } from "../localApi";
+import { buildThreadRouteParams } from "../threadRoutes";
 import {
   deriveLogicalProjectKeyFromSettings,
   derivePhysicalProjectKey,
@@ -47,6 +48,10 @@ import { useCopyToClipboard } from "./useCopyToClipboard";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { useClientSettings } from "./useSettings";
 import { useThreadActions } from "./useThreadActions";
+import {
+  isThreadSidebarTreeAction,
+  useThreadSidebarOrganization,
+} from "./useThreadSidebarOrganization";
 
 function failureToast(title: string, error: unknown) {
   toastManager.add(
@@ -104,6 +109,12 @@ export function useThreadActionMenu(input: {
     reportFailure: false,
   });
   const handleNewThread = useNewThreadHandler();
+  const navigateToThread = useCallback(
+    (ref: ScopedThreadRef) =>
+      router.navigate({ to: "/$environmentId/$threadId", params: buildThreadRouteParams(ref) }),
+    [router],
+  );
+  const sidebarOrganization = useThreadSidebarOrganization({ navigateToThread });
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
@@ -151,6 +162,10 @@ export function useThreadActionMenu(input: {
           canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
           branch: thread.branch ?? null,
           projectFilter: null,
+          sidebarTree: sidebarOrganization.readMenuState(thread),
+          // The header acts on the thread being read, so it keeps the
+          // lifecycle items a nested subagent's sidebar row leaves out.
+          lifecycleOwnedByParent: false,
           isPinned: thread.pinnedAt != null,
           isSettled: supports.settlement && thread.settledOverride === "settled",
           autoSettleEnabled: thread.autoSettleDisabledAt == null,
@@ -172,6 +187,10 @@ export function useThreadActionMenu(input: {
             "Thread action unavailable",
             new Error("This connection cannot change threads."),
           );
+          return;
+        }
+        if (isThreadSidebarTreeAction(action)) {
+          sidebarOrganization.runMenuAction(action, thread);
           return;
         }
         if (action.startsWith("snooze:")) {
@@ -360,6 +379,7 @@ export function useThreadActionMenu(input: {
       router,
       setThreadAutoSettle,
       settleThread,
+      sidebarOrganization,
       snoozeThread,
       threadRef,
       timestampFormat,

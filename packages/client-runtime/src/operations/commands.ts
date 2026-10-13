@@ -13,6 +13,7 @@ import {
   type NodeId,
   type OrchestrationV2Command,
   type OrchestrationV2CreationSource,
+  type OrchestrationV2ThreadSidebarOrganization,
   type PlanId,
   type ProjectId,
   type ProjectIconOverride,
@@ -76,6 +77,8 @@ export interface CreateThreadInput extends CommandMetadata {
   readonly interactionMode: ProviderInteractionMode;
   readonly branch: string | null;
   readonly worktreePath: string | null;
+  /** Create a subthread the sidebar nests under this thread; needs threadSidebarOrganization. */
+  readonly sidebarParentThreadId?: ThreadId;
 }
 
 export interface ThreadCommandInput extends CommandMetadata {
@@ -105,6 +108,10 @@ export interface ReorderPinnedThreadInput extends ThreadCommandInput {
 export interface ReorderActiveThreadInput extends ThreadCommandInput {
   /** Fractional-index key that sorts between the drop position's neighbors. */
   readonly orderKey: string;
+}
+
+export interface SetThreadSidebarOrganizationInput extends ThreadCommandInput {
+  readonly organization: OrchestrationV2ThreadSidebarOrganization;
 }
 
 export interface SnoozeThreadInput extends ThreadCommandInput {
@@ -410,6 +417,9 @@ export const createThread = Effect.fn("EnvironmentCommands.createThread")(functi
     interactionMode: input.interactionMode,
     branch: input.branch,
     worktreePath: input.worktreePath,
+    ...(input.sidebarParentThreadId === undefined
+      ? {}
+      : { sidebarParentThreadId: input.sidebarParentThreadId }),
   });
 });
 
@@ -498,6 +508,17 @@ export const reorderActiveThread = Effect.fn("EnvironmentCommands.reorderActiveT
     commandId: yield* allocateCommandId(input),
     threadId: input.threadId,
     orderKey: input.orderKey,
+  });
+});
+
+export const setThreadSidebarOrganization = Effect.fn(
+  "EnvironmentCommands.setThreadSidebarOrganization",
+)(function* (input: SetThreadSidebarOrganizationInput) {
+  return yield* dispatch({
+    type: "thread.sidebar-organization.set",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+    organization: input.organization,
   });
 });
 

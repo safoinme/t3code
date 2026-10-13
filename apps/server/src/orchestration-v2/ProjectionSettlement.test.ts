@@ -407,6 +407,50 @@ it.effect.each([
 it.effect.each([
   ["sql", layerSql],
   ["memory", ProjectionStore.layerMemory],
+] as const)(
+  "%s: lists the threads the sidebar draws under a parent, by the placement that applies",
+  ([, testLayer]) =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const parent = yield* createThread("sidebar-parent");
+      const other = yield* createThread("sidebar-other");
+      const childOf = (threadId: ThreadId) => ({
+        parentThreadId: threadId,
+        relationshipToParent: "subagent" as const,
+        rootThreadId: threadId,
+      });
+      const chosen = yield* createThread("sidebar-chosen", {
+        sidebarOrganization: { type: "parent", threadId: parent },
+      });
+      const recorded = yield* createThread("sidebar-recorded", { lineage: childOf(parent) });
+      const forked = yield* createThread("sidebar-forked", {
+        lineage: { ...childOf(other), relationshipToParent: "fork" },
+        forkedFrom: { type: "run", threadId: parent, runId: RunId.make("run:sidebar-fork") },
+      });
+      // Recorded under the parent, but the stored placement says otherwise.
+      yield* createThread("sidebar-moved-away", {
+        lineage: childOf(parent),
+        sidebarOrganization: { type: "parent", threadId: other },
+      });
+      yield* createThread("sidebar-top-level", {
+        lineage: childOf(parent),
+        sidebarOrganization: { type: "top-level" },
+      });
+      yield* createThread("sidebar-archived", { lineage: childOf(parent), archivedAt: old });
+      yield* createThread("sidebar-deleted", { lineage: childOf(parent), deletedAt: old });
+
+      assert.deepEqual(
+        (yield* store.getSidebarChildThreadIds([parent])).toSorted(),
+        [chosen, recorded, forked].toSorted(),
+      );
+      assert.deepEqual(yield* store.getSidebarChildThreadIds([chosen, recorded]), []);
+      assert.deepEqual(yield* store.getSidebarChildThreadIds([]), []);
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect.each([
+  ["sql", layerSql],
+  ["memory", ProjectionStore.layerMemory],
 ] as const)("%s: an unsettled-only shell read skips settled threads", ([, testLayer]) =>
   Effect.gen(function* () {
     const store = yield* ProjectionStore.ProjectionStoreV2;

@@ -1,5 +1,9 @@
 import { threadRuntimeIsActive, type EnvironmentThreadShell } from "./models.ts";
-import { toSortableTimestamp } from "./threadSort.ts";
+import {
+  latestFamilyTimestampMs,
+  toSortableTimestamp,
+  type ThreadSortFamily,
+} from "./threadSort.ts";
 
 // Working section beta, shared so web and mobile fold and order the inbox the
 // same way. Off by default; each client owns its own toggle.
@@ -41,20 +45,24 @@ type InboxThreadInput = Pick<
 /** The inbox lists threads newest first by when each last came back to the
     user, so a thread that leaves the Working section lands on top.
     `observedReturnAt` adds returns the server does not stamp, such as an
-    approval request mid-turn or background work ending. */
+    approval request mid-turn or background work ending. With `familyOf`, a
+    row ranks by the latest return in its family. */
 export function sortInboxThreadsByReturn<T extends InboxThreadInput>(
   threads: readonly T[],
   observedReturnAt?: (thread: T) => number | undefined,
+  familyOf?: ThreadSortFamily<T>,
 ): T[] {
   const timestamps = new Map(
     threads.map((thread) => [
       thread,
-      Math.max(
-        toSortableTimestamp(thread.createdAt) ?? 0,
-        toSortableTimestamp(thread.unsettledAt ?? undefined) ?? 0,
-        toSortableTimestamp(thread.latestRun?.requestedAt ?? undefined) ?? 0,
-        toSortableTimestamp(thread.latestRun?.completedAt ?? undefined) ?? 0,
-        observedReturnAt?.(thread) ?? 0,
+      latestFamilyTimestampMs(thread, familyOf, (member) =>
+        Math.max(
+          toSortableTimestamp(member.createdAt) ?? 0,
+          toSortableTimestamp(member.unsettledAt ?? undefined) ?? 0,
+          toSortableTimestamp(member.latestRun?.requestedAt ?? undefined) ?? 0,
+          toSortableTimestamp(member.latestRun?.completedAt ?? undefined) ?? 0,
+          observedReturnAt?.(member) ?? 0,
+        ),
       ),
     ]),
   );
@@ -70,18 +78,24 @@ type WorkingSortInput = Pick<
     user sent. Runs ending and wakes (background results, delegated results,
     PR watches) do not move a row, so the order stays put while agents finish
     and resume. Servers without the authored stamp fall back to the latest
-    run's request time. */
-export function sortWorkingThreadsBySend<T extends WorkingSortInput>(threads: readonly T[]): T[] {
+    run's request time. With `familyOf`, a row ranks by the last message sent
+    anywhere in its family. */
+export function sortWorkingThreadsBySend<T extends WorkingSortInput>(
+  threads: readonly T[],
+  familyOf?: ThreadSortFamily<T>,
+): T[] {
   const timestamps = new Map(
     threads.map((thread) => [
       thread,
-      Math.max(
-        toSortableTimestamp(thread.createdAt) ?? 0,
-        toSortableTimestamp(
-          (thread.latestUserAuthoredMessageAt === undefined
-            ? thread.latestRun?.requestedAt
-            : thread.latestUserAuthoredMessageAt) ?? undefined,
-        ) ?? 0,
+      latestFamilyTimestampMs(thread, familyOf, (member) =>
+        Math.max(
+          toSortableTimestamp(member.createdAt) ?? 0,
+          toSortableTimestamp(
+            (member.latestUserAuthoredMessageAt === undefined
+              ? member.latestRun?.requestedAt
+              : member.latestUserAuthoredMessageAt) ?? undefined,
+          ) ?? 0,
+        ),
       ),
     ]),
   );

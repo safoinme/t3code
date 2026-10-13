@@ -112,6 +112,22 @@ export const OrchestrationV2AppThreadLineage = Schema.Struct({
 });
 export type OrchestrationV2AppThreadLineage = typeof OrchestrationV2AppThreadLineage.Type;
 
+/**
+ * Where the user wants a thread to sit in the sidebar tree. This is display
+ * organization only: it never changes `lineage`, history sharing, task
+ * ownership, or the thread's project and workspace.
+ */
+export const OrchestrationV2ThreadSidebarOrganization = Schema.Union([
+  /** Follow the recorded fork or subagent parent, when there is one. */
+  Schema.Struct({ type: Schema.Literal("automatic") }),
+  /** Stay at the top level even when lineage records a parent. */
+  Schema.Struct({ type: Schema.Literal("top-level") }),
+  /** Sit under a thread the user chose, in the same environment. */
+  Schema.Struct({ type: Schema.Literal("parent"), threadId: ThreadId }),
+]);
+export type OrchestrationV2ThreadSidebarOrganization =
+  typeof OrchestrationV2ThreadSidebarOrganization.Type;
+
 export const OrchestrationV2ContextTransferType = Schema.Literals([
   "fork",
   "provider_handoff",
@@ -381,6 +397,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   lineage: OrchestrationV2AppThreadLineage,
+  /** Absent means automatic; threads from before sidebar trees never carry it. */
+  sidebarOrganization: Schema.optional(OrchestrationV2ThreadSidebarOrganization),
   forkedFrom: Schema.NullOr(
     Schema.Union([
       Schema.Struct({ type: Schema.Literal("run"), threadId: ThreadId, runId: RunId }),
@@ -451,6 +469,40 @@ export function isProviderNativeSubagentThread(
 ): boolean {
   return thread.lineage.relationshipToParent === "subagent" && thread.creationSource === "provider";
 }
+
+/**
+ * The thread a sidebar tree nests this one under, before checking that the
+ * parent is visible. A run fork records the thread it branched from in
+ * `forkedFrom`, which can differ from the lineage parent.
+ */
+export function resolveSidebarParentThreadId(
+  thread: Pick<OrchestrationV2AppThread, "lineage" | "forkedFrom" | "sidebarOrganization">,
+): ThreadId | null {
+  switch (thread.sidebarOrganization?.type) {
+    case "top-level":
+      return null;
+    case "parent":
+      return thread.sidebarOrganization.threadId;
+    default:
+      return thread.forkedFrom?.type === "run"
+        ? thread.forkedFrom.threadId
+        : thread.lineage.parentThreadId;
+  }
+}
+
+/**
+ * The deepest level a sidebar tree has: a root is 0, its children 1 and their
+ * children 2. A placement someone chooses (a sidebar parent on thread.create,
+ * a `parent` organization) has to fit: the parent's depth, plus one, plus the
+ * levels nested under the thread that moves with it. Depth is counted along
+ * resolveSidebarParentThreadId and stops at an archived, deleted or missing
+ * thread, where clients draw a new root.
+ *
+ * Recorded fork and subagent ancestry is never refused for depth, and neither
+ * is `automatic` or `top-level`, so a recorded chain can run deeper. Clients
+ * draw those threads at this depth, under their ancestor at depth 1.
+ */
+export const SIDEBAR_TREE_MAX_DEPTH = 2;
 
 export const OrchestrationV2RunStatus = Schema.Literals([
   "preparing",
@@ -1754,6 +1806,7 @@ export const OrchestrationV2DomainEvent = Schema.Union([
       "thread.unpinned",
       "thread.pin-reordered",
       "thread.active-reordered",
+      "thread.sidebar-organized",
       "thread.visited",
       "thread.marked-unread",
       "thread.metadata-updated",
@@ -1941,6 +1994,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   /** Pull request discovered from the thread's current branch. */
   branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   lineage: OrchestrationV2AppThreadLineage,
+  /** Omitted by servers that predate sidebar trees, and for automatic threads. */
+  sidebarOrganization: Schema.optional(OrchestrationV2ThreadSidebarOrganization),
   forkedFrom: Schema.NullOr(OrchestrationV2AppThread.fields.forkedFrom),
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
@@ -2574,6 +2629,7 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
       "thread.unpinned",
       "thread.pin-reordered",
       "thread.active-reordered",
+      "thread.sidebar-organized",
       "thread.visited",
       "thread.marked-unread",
       "thread.pull-request-synced",
@@ -2713,6 +2769,12 @@ export const OrchestrationV2Command = Schema.Union([
     interactionMode: ProviderInteractionMode,
     branch: Schema.NullOr(TrimmedNonEmptyString),
     worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+    /**
+     * Create the thread as a subthread: a separate conversation the sidebar
+     * nests under this one. Requires the threadSidebarOrganization capability;
+     * older servers drop the field and create a top-level thread.
+     */
+    sidebarParentThreadId: Schema.optional(ThreadId),
     importedNativeThread: Schema.optional(
       Schema.Struct({
         ref: Schema.Struct({
@@ -2811,6 +2873,18 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     orderKey: TrimmedNonEmptyString,
+  }),
+  /**
+   * Move a thread in the sidebar tree. The server rejects a missing or deleted
+   * parent, a self-parent, and any choice that would close a cycle; it checks
+   * and commits a move as one step, so two crossing moves cannot both land.
+   * Returning to the recorded parent is the explicit `automatic` choice.
+   */
+  Schema.Struct({
+    type: Schema.Literal("thread.sidebar-organization.set"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    organization: OrchestrationV2ThreadSidebarOrganization,
   }),
   Schema.Struct({
     type: Schema.Literal("thread.visit"),

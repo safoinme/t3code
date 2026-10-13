@@ -37,7 +37,7 @@ function layout(
   const rects = items.map((item) => {
     const height =
       item.kind === "thread"
-        ? (item.section === "pinned" || item.section === "active" ? cardHeight : 36) * scale
+        ? (item.section === "pinned" || item.section === "active" ? cardHeight : 56) * scale
         : item.marker === "pinned-header" || item.marker === "pinned-divider"
           ? 0
           : (item.marker.endsWith("placeholder") ? 0 : 32) * scale;
@@ -561,7 +561,7 @@ describe("sidebar drag projection", () => {
     },
   );
 
-  it("uses the canonical settled rank and the destination's slim height", () => {
+  it("uses the canonical settled rank and the destination's two-line height", () => {
     const items = [
       pinnedHeader,
       thread("p", "pinned"),
@@ -578,14 +578,16 @@ describe("sidebar drag projection", () => {
     );
     expect(result.get(sidebarMarkerId("settled-header"))?.y).toBe(-46);
     expect(result.get("s1")?.y).toBe(-46);
-    expect(result.get("s2")?.y).toBe(-9);
+    // The card leaves (-83), the empty inbox opens its placeholder (+37) and
+    // the thread lands above s2 as a 56px row (+57).
+    expect(result.get("s2")?.y).toBe(11);
   });
 
   it.each([
     ["a1", 83],
     ["a2", 0],
   ] as const)(
-    "reserves a full card at the pointer slot over %s when a slim row enters Active",
+    "reserves a full card at the pointer slot over %s when a settled row enters Active",
     (over, firstOffset) => {
       const items = [
         pinnedHeader,
@@ -616,8 +618,9 @@ describe("sidebar drag projection", () => {
     ];
     const result = preview({ items, settledOrder: [], settledExpanded: true }, "z", "a");
     expect(result.get(sidebarMarkerId("snoozed-header"))?.scaleY).toBe(0);
-    expect(result.get(sidebarMarkerId("settled-header"))?.y).toBe(13);
-    expect(result.get("s")?.y).toBe(13);
+    // A card opens in the inbox (+83); the header (-33) and the 56px row (-57) leave.
+    expect(result.get(sidebarMarkerId("settled-header"))?.y).toBe(-7);
+    expect(result.get("s")?.y).toBe(-7);
   });
 
   it("keeps a collapsed settled target without inserting a hidden row", () => {
@@ -771,7 +774,7 @@ describe("sidebar drag projection", () => {
     };
     const withRoute = preview({ ...input, routeThreadKey: "s" }, "a", "s");
     const withoutRoute = preview(input, "a", "s");
-    expect(withRoute.get("s")).toEqual({ ...stationary, y: -9 });
+    expect(withRoute.get("s")).toEqual({ ...stationary, y: 11 });
     expect(withoutRoute.get("s")?.scaleY).toBe(0);
   });
 
@@ -846,7 +849,89 @@ describe("sidebar drag projection", () => {
       "a",
     );
     expect(result.get(sidebarMarkerId("snoozed-header"))).toEqual({ ...stationary, y: 83 });
-    expect(result.get(sidebarMarkerId("settled-header"))?.y).toBe(46);
+    expect(result.get(sidebarMarkerId("settled-header"))?.y).toBe(83 - 57);
+  });
+});
+
+describe("sidebar drag projection with families", () => {
+  // A family root's list item holds its nested rows, so it is taller than a card.
+  const nestedHeight = 100;
+  const family: SidebarListItem = {
+    kind: "thread",
+    key: "family",
+    section: "active",
+    nestedLineCount: 3,
+  };
+  const restingItems = [
+    pinnedHeader,
+    divider,
+    marker("active-placeholder"),
+    family,
+    thread("a1", "active"),
+    thread("a2", "active"),
+    settledHeader,
+    marker("settled-placeholder"),
+  ];
+  function familyPreview(
+    active: string,
+    over: string,
+    items = restingItems,
+    settledOrder: readonly string[] = [],
+  ) {
+    const strategy = createSidebarSortingStrategy({
+      items,
+      settledOrder,
+      settledExpanded: true,
+    });
+    const base = layout(items, active, over);
+    let top = 100;
+    const rects = items.map((item, index) => {
+      const height = base.rects[index]!.height + (item === family ? nestedHeight : 0);
+      const rect = { ...base.rects[index]!, top, height, bottom: top + height };
+      top += height + 1;
+      return rect;
+    });
+    const args = { ...base, rects, activeNodeRect: rects[base.activeIndex]! };
+    return new Map(
+      items.map((item, index) => [sidebarListItemId(item), strategy({ ...args, index })]),
+    );
+  }
+
+  // The empty-inbox placeholder holds a 1px gap at rest that the preview closes.
+  const placeholderGap = 1;
+
+  it("opens a one-card gap above a family, not a gap as tall as the family", () => {
+    const transforms = familyPreview("a2", "family");
+
+    expect(transforms.get("family")?.y).toBe(82 + 1 - placeholderGap);
+    expect(transforms.get("a1")?.y).toBe(82 + 1 - placeholderGap);
+  });
+
+  it("keeps a lifted family's nested rows when sizing the slot it lands in", () => {
+    const transforms = familyPreview("family", "a1");
+
+    expect(transforms.get("a1")?.y).toBe(-(82 + nestedHeight + 1) - placeholderGap);
+    // The row below the landed family stays where it was instead of sliding under it.
+    expect(transforms.get("a2")?.y).toBe(-placeholderGap);
+  });
+
+  it("sizes a family settled by the drop with the two-line row its root becomes", () => {
+    const items = [
+      pinnedHeader,
+      divider,
+      marker("active-placeholder"),
+      family,
+      thread("a1", "active"),
+      settledHeader,
+      thread("s", "settled"),
+    ];
+    const transforms = familyPreview("family", "s", items, ["family", "s"]);
+
+    // The family leaves the inbox: everything below rises by its card and nested rows.
+    const left = -(82 + nestedHeight + 1) - placeholderGap;
+    expect(transforms.get(sidebarMarkerId("settled-header"))?.y).toBe(left);
+    // It lands above "s" as a 56px root with its nested rows, not as a lone row.
+    expect(transforms.get("s")?.y).toBe(left + 56 + nestedHeight + 1);
   });
 });
 

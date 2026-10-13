@@ -10,6 +10,8 @@ const baseState: ThreadActionMenuState = {
   canOperate: true,
   branch: null,
   projectFilter: null,
+  sidebarTree: null,
+  lifecycleOwnedByParent: false,
   isPinned: false,
   isSettled: false,
   autoSettleEnabled: true,
@@ -104,6 +106,77 @@ describe("buildThreadActionMenuItems", () => {
         },
       }),
     ).toEqual(["rename", "mark-unread", "copy", "project-settings", "archive", "delete"]);
+  });
+
+  it("offers sidebar tree moves only where a tree and its server support them", () => {
+    const treeIds = (state: ThreadActionMenuState) =>
+      allIds(state).filter((id) =>
+        ["new-subthread", "move-under", "move-to-top-level", "return-to-recorded-parent"].includes(
+          id,
+        ),
+      );
+    const sidebarTree = {
+      canAddSubthread: true,
+      hasSidebarParent: false,
+      canReturnToRecordedParent: false,
+      hasMoveTargets: true,
+    };
+
+    // A server that cannot store a placement gets none of the tree items.
+    expect(treeIds(baseState)).toEqual([]);
+    expect(treeIds({ ...baseState, sidebarTree })).toEqual(["new-subthread", "move-under"]);
+    // The ways back show only when there is somewhere to go back to.
+    expect(
+      treeIds({
+        ...baseState,
+        sidebarTree: { ...sidebarTree, hasSidebarParent: true, canReturnToRecordedParent: true },
+      }),
+    ).toEqual(["new-subthread", "move-under", "move-to-top-level", "return-to-recorded-parent"]);
+    expect(
+      buildThreadActionMenuItems({
+        ...baseState,
+        sidebarTree: { ...sidebarTree, hasMoveTargets: false },
+      }).find((item) => item.id === "move-under"),
+    ).toMatchObject({ disabled: true });
+    // A grandchild is the last level, so it takes no subthread.
+    expect(
+      treeIds({
+        ...baseState,
+        sidebarTree: { ...sidebarTree, canAddSubthread: false, hasSidebarParent: true },
+      }),
+    ).toEqual(["move-under", "move-to-top-level"]);
+  });
+
+  it("requires permission for every sidebar tree move", () => {
+    const items = buildThreadActionMenuItems({
+      ...baseState,
+      canOperate: false,
+      sidebarTree: {
+        canAddSubthread: true,
+        hasSidebarParent: true,
+        canReturnToRecordedParent: true,
+        hasMoveTargets: true,
+      },
+    });
+
+    for (const id of [
+      "new-subthread",
+      "move-under",
+      "move-to-top-level",
+      "return-to-recorded-parent",
+    ]) {
+      expect(items.find((item) => item.id === id)).toMatchObject({ disabled: true });
+    }
+  });
+
+  it("leaves a subagent row's lifecycle to the thread that spawned it", () => {
+    expect(ids({ ...baseState, lifecycleOwnedByParent: true })).toEqual([
+      "rename",
+      "regenerate-title",
+      "mark-unread",
+      "copy",
+      "project-settings",
+    ]);
   });
 
   it("groups project settings with utility actions before archive", () => {

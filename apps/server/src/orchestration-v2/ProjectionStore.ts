@@ -56,6 +56,7 @@ import {
   OrchestrationV2SubagentJson as OrchestrationV2SubagentJsonSchema,
   OrchestrationV2TurnItemJson as OrchestrationV2TurnItemJsonSchema,
   orchestrationV2RunWorkStartedAt,
+  resolveSidebarParentThreadId,
   RunId,
   MessageId,
   RuntimeRequestId,
@@ -414,6 +415,14 @@ export interface ProjectionStoreV2Shape {
   readonly getThreadsWithPullRequests: (
     threadId?: ThreadId,
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadPullRequests>, ProjectionStoreV2Error>;
+  /**
+   * The threads the sidebar draws directly under any of `parentIds`: not
+   * deleted, not archived, and with one of them as their sidebar parent (see
+   * resolveSidebarParentThreadId). Reads thread rows only.
+   */
+  readonly getSidebarChildThreadIds: (
+    parentIds: ReadonlyArray<ThreadId>,
+  ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionStoreV2Error>;
   readonly getTurnStartContext: (
     threadId: ThreadId,
     runId: RunId,
@@ -617,6 +626,22 @@ function needsRecovery(
   }
 }
 
+function sidebarChildThreadIds(
+  threads: ReadonlyArray<OrchestrationV2AppThread>,
+  parentIds: ReadonlyArray<ThreadId>,
+): Array<ThreadId> {
+  const parents = new Set(parentIds);
+  return threads.flatMap((thread) => {
+    const parentId = resolveSidebarParentThreadId(thread);
+    return thread.deletedAt === null &&
+      thread.archivedAt === null &&
+      parentId !== null &&
+      parents.has(parentId)
+      ? [thread.id]
+      : [];
+  });
+}
+
 function upsertById<T extends { readonly id: string }>(items: ReadonlyArray<T>, next: T): Array<T> {
   const index = items.findIndex((item) => item.id === next.id);
   if (index === -1) {
@@ -742,7 +767,9 @@ export function applyToProjection(
         thread: event.payload,
       };
     // Visited tracking is read state, not activity: skip the updatedAt bump so
-    // viewing a thread does not surface it as recently active.
+    // viewing a thread does not surface it as recently active. Moving a thread
+    // in the sidebar tree is the same: it changes where the row is drawn.
+    case "thread.sidebar-organized":
     case "thread.visited":
     case "thread.marked-unread":
       return {
@@ -1481,6 +1508,9 @@ export function threadShellFromProjection(
       ? {}
       : { activeOrderKey: projection.thread.activeOrderKey }),
     lineage: projection.thread.lineage,
+    ...(projection.thread.sidebarOrganization === undefined
+      ? {}
+      : { sidebarOrganization: projection.thread.sidebarOrganization }),
     forkedFrom: projection.thread.forkedFrom,
     activeProviderThreadId: projection.thread.activeProviderThreadId,
     ...(projection.thread.historyOrigin === undefined
@@ -1749,6 +1779,9 @@ function shellFromState(input: {
       ? {}
       : { activeOrderKey: input.state.thread.activeOrderKey }),
     lineage: input.state.thread.lineage,
+    ...(input.state.thread.sidebarOrganization === undefined
+      ? {}
+      : { sidebarOrganization: input.state.thread.sidebarOrganization }),
     forkedFrom: input.state.thread.forkedFrom,
     activeProviderThreadId: input.state.thread.activeProviderThreadId,
     ...(input.state.thread.historyOrigin === undefined
@@ -1836,6 +1869,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           case "thread.unpinned":
           case "thread.pin-reordered":
           case "thread.active-reordered":
+          case "thread.sidebar-organized":
           case "thread.visited":
           case "thread.marked-unread":
           case "thread.metadata-updated":
@@ -2667,6 +2701,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           event.type !== "thread.pinned" &&
           event.type !== "thread.unpinned" &&
           event.type !== "thread.pin-reordered" &&
+          event.type !== "thread.sidebar-organized" &&
           event.type !== "thread.visited" &&
           event.type !== "thread.marked-unread" &&
           event.type !== "thread.metadata-updated" &&
@@ -5610,6 +5645,28 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         );
       }).pipe(Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })));
 
+    const getSidebarChildThreadIds: ProjectionStoreV2Shape["getSidebarChildThreadIds"] = (
+      parentIds,
+    ) =>
+      Effect.gen(function* () {
+        if (parentIds.length === 0) return [];
+        // The three fields a sidebar parent can come from narrow the scan;
+        // resolveSidebarParentThreadId then picks the one that applies.
+        const rows = yield* sql<PayloadRow>`
+          SELECT payload_json
+          FROM orchestration_v2_projection_threads
+          WHERE deleted_at IS NULL
+            AND json_extract(payload_json, '$.archivedAt') IS NULL
+            AND (
+              json_extract(payload_json, '$.sidebarOrganization.threadId') IN ${sql.in(parentIds)}
+              OR json_extract(payload_json, '$.forkedFrom.threadId') IN ${sql.in(parentIds)}
+              OR json_extract(payload_json, '$.lineage.parentThreadId') IN ${sql.in(parentIds)}
+            )
+        `;
+        const threads = yield* Effect.forEach(rows, (row) => decodeThreadPayload(row.payload_json));
+        return sidebarChildThreadIds(threads, parentIds);
+      }).pipe(Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })));
+
     const shellThreadStateFromRow = (input: {
       readonly row: ShellThreadRow;
       readonly runOrdinalsByThreadId: ReadonlyMap<ThreadId, Map<RunId, number>>;
@@ -5946,6 +6003,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getThread,
       getSettlementCandidates,
       getThreadsWithPullRequests,
+      getSidebarChildThreadIds,
       getThreadProjection,
       getTurnStartContext,
       getTurnStartHistory,
@@ -6119,6 +6177,15 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
                 settledAt: thread.settledAt,
                 pullRequests: thread.pullRequests ?? [],
               })),
+          ),
+        ),
+      getSidebarChildThreadIds: (parentIds) =>
+        Ref.get(replayState).pipe(
+          Effect.map((state) =>
+            sidebarChildThreadIds(
+              [...state.projections.values()].map(({ thread }) => thread),
+              parentIds,
+            ),
           ),
         ),
       getLimitRecoveryCandidates: (options) =>

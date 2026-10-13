@@ -490,6 +490,81 @@ it.effect("a client caller targets any thread within its ceiling and cannot act 
   ),
 );
 
+const sidebarCommands: Array<unknown> = [];
+
+it.effect("places a thread in the sidebar tree through t3_thread_organize", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const organize = (args: Record<string, unknown>) =>
+      server
+        .callTool({
+          name: "t3_thread_organize",
+          arguments: { threadId: "other-project-thread", ...args },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, clientScope("auto")),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+
+    const missingParent = yield* organize({ action: "move_under" });
+    expect(declaredFailure(missingParent)).toMatchObject({
+      code: "invalid_request",
+      message: "move_under requires parentThreadId.",
+    });
+    expect(sidebarCommands).toEqual([]);
+
+    for (const args of [
+      { action: "move_under", parentThreadId: "sidebar-parent-thread" },
+      { action: "move_to_top_level" },
+      { action: "restore_recorded_parent" },
+    ]) {
+      const result = yield* organize(args);
+      expect(result.isError).toBe(false);
+      expect(result.structuredContent).toMatchObject({ sequence: 7 });
+    }
+    // Each is the sidebar placement command for the targeted thread, and
+    // nothing else: no fork, delegation or lifecycle command rides along.
+    expect(sidebarCommands).toMatchObject(
+      [
+        { type: "parent", threadId: "sidebar-parent-thread" },
+        { type: "top-level" },
+        { type: "automatic" },
+      ].map((organization) => ({
+        type: "thread.sidebar-organization.set",
+        threadId: "other-project-thread",
+        organization,
+      })),
+    );
+  }).pipe(
+    Effect.provide(
+      layerThreadToolkit.pipe(
+        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(NodeCrypto.layer),
+        Layer.provide(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: (id) =>
+              Effect.succeed(McpToolAccessTestkit.liveThreadShell(id, { runtimeMode: "auto" })),
+            getProjectThreadRecords: () =>
+              Effect.succeed({
+                thread: {
+                  id: ThreadId.make("other-project-thread"),
+                  projectId: "other-project",
+                  runtimeMode: "auto",
+                  interactionMode: "default",
+                  deletedAt: null,
+                },
+              } as never),
+            dispatch: (command) => {
+              sidebarCommands.push(command);
+              return Effect.succeed({ sequence: 7, storedEvents: [] });
+            },
+          }),
+        ),
+      ),
+    ),
+  ),
+);
+
 it.effect("a read-only client reads threads and is refused every write before it runs", () =>
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;

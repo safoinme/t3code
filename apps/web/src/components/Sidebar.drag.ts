@@ -2,6 +2,7 @@ import { closestCenter, type CollisionDetection, type Modifier } from "@dnd-kit/
 import { verticalListSortingStrategy, type SortingStrategy } from "@dnd-kit/sortable";
 import {
   resolveSidebarDropTarget,
+  resolveSidebarRowVariant,
   sidebarListItemId,
   sidebarMarkerId,
   type SidebarListItem,
@@ -109,7 +110,7 @@ export function createSidebarSortingStrategy(input: {
   routeThreadKey?: string | null;
   snoozedThreadCount?: number;
   cardHeight?: number;
-  slimHeight?: number;
+  compactHeight?: number;
   /** Space each pinned boundary opens for its label while dragging. The
    * markers stay zero height at rest, so nothing is reserved until pickup. */
   boundaryLabelHeight?: number;
@@ -134,7 +135,7 @@ export function createSidebarSortingStrategy(input: {
       settled: [],
     };
     let cardHeight = input.cardHeight;
-    let slimHeight = input.slimHeight;
+    let compactHeight = input.compactHeight;
     let headerScale: number | undefined;
     for (const [index, item] of items.entries()) {
       if (item.kind === "marker") {
@@ -144,17 +145,34 @@ export function createSidebarSortingStrategy(input: {
         }
         continue;
       }
-      if (item.section === "pinned" || item.section === "active" || item.section === "working")
+      // A family root's rect includes its nested rows, so it is not a sample
+      // of either row height.
+      if (item.nestedLineCount) {
+        if (item.key !== active.key) groups[item.section].push(item);
+        continue;
+      }
+      if (resolveSidebarRowVariant({ section: item.section, nested: false }) === "card")
         cardHeight ??= rects[index]?.height;
-      else slimHeight ??= rects[index]?.height;
+      else compactHeight ??= rects[index]?.height;
       if (item.key !== active.key) groups[item.section].push(item);
     }
-    // Cards are 4.875rem + 0.25rem padding; slim rows/placeholders are h-9.
+    // Cards are 4.875rem + 0.25rem padding; compact rows are h-14;
+    // placeholders are h-9.
     const scale =
-      slimHeight !== undefined ? slimHeight / 36 : (headerScale ?? (cardHeight ?? 82) / 82);
-    cardHeight ??= 82 * scale;
-    slimHeight ??= 36 * scale;
+      compactHeight !== undefined ? compactHeight / 56 : (headerScale ?? (cardHeight ?? 82) / 82);
+    const heightByVariant = {
+      card: cardHeight ?? 82 * scale,
+      compact: compactHeight ?? 56 * scale,
+    };
+    const placeholderHeight = 36 * scale;
     const labelHeight = (input.boundaryLabelHeight ?? 0) * scale;
+    const rowHeight = (section: SidebarSection) =>
+      heightByVariant[resolveSidebarRowVariant({ section, nested: false })];
+    // A lifted family keeps its nested rows wherever it lands; only the root
+    // row changes with the section it is dropped in.
+    const liftedNestedHeight = active.nestedLineCount
+      ? Math.max(0, (rects[activeIndex]?.height ?? 0) - rowHeight(active.section))
+      : 0;
     const group = groups[target.section];
     const order =
       target.section === "pinned"
@@ -206,19 +224,15 @@ export function createSidebarSortingStrategy(input: {
     const heights = projected.map((item) => {
       const index = indices.get(sidebarListItemId(item));
       const rect = index === undefined ? undefined : rects[index];
-      const fallback =
-        item.kind === "thread" &&
-        (item.section === "pinned" || item.section === "active" || item.section === "working")
-          ? cardHeight
-          : slimHeight;
+      const fallback = item.kind === "thread" ? rowHeight(item.section) : placeholderHeight;
       const moved = item.kind === "thread" && item.key === active.key;
       return item.kind === "marker" &&
         (item.marker === "pinned-header" || item.marker === "pinned-divider")
         ? labelHeight
         : item.kind === "marker" && item.marker.endsWith("placeholder")
-          ? slimHeight
+          ? placeholderHeight
           : moved
-            ? fallback
+            ? fallback + liftedNestedHeight
             : (rect?.height ?? fallback);
     });
     const firstShelf = items.findIndex(isShelfHeader);

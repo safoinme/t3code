@@ -258,6 +258,16 @@ export function readEnvironmentSupportsAutoSettleOptOut(environmentId: Environme
   );
 }
 
+/** Whether the environment's server stores sidebar tree placement
+    (thread.sidebar-organization.set, sidebarParentThreadId on thread.create).
+    False for older servers, which would drop it, so clients offer no grouping. */
+export function readEnvironmentSupportsSidebarOrganization(environmentId: EnvironmentId): boolean {
+  return (
+    appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
+      .threadSidebarOrganization === true
+  );
+}
+
 export function readEnvironmentSupportsActiveReorder(environmentId: EnvironmentId): boolean {
   return (
     appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities

@@ -30,7 +30,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
   description:
-    "Pin, snooze, settle, archive, or mark a thread unread. Omit threadId for this thread. snooze requires snoozedUntil. Existing thread lifecycle rules apply. Settling this thread takes effect when your turn completes, returning settlesWhenTurnEnds=true; a turn that fails or is interrupted, or a queued message, leaves it active.",
+    "Pin, snooze, settle, archive, or mark a thread unread, or place it in the sidebar tree. Omit threadId for this thread. snooze requires snoozedUntil. Existing thread lifecycle rules apply. Settling this thread takes effect when your turn completes, returning settlesWhenTurnEnds=true; a turn that fails or is interrupted, or a queued message, leaves it active. move_under requires parentThreadId and lists the thread under that thread; move_to_top_level lists it at the top level; restore_recorded_parent returns a fork or subagent to the thread it came from. These three change sidebar organization only, never the conversation, its history, its workspace, or which thread delegated it; a parent that is missing, the thread itself, or one of its own descendants is refused, and so is a move that would put the thread or a thread nested under it on a fourth sidebar level.",
   parameters: Schema.Struct({
     threadId: Schema.optional(ThreadId),
     action: Schema.Literals([
@@ -43,8 +43,12 @@ const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
       "archive",
       "unarchive",
       "mark_unread",
+      "move_under",
+      "move_to_top_level",
+      "restore_recorded_parent",
     ]),
     snoozedUntil: Schema.optional(IsoDateTime),
+    parentThreadId: Schema.optional(ThreadId),
   }),
   success: Schema.Union([
     OrchestrationV2DispatchCommandResult,

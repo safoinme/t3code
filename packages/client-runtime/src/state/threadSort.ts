@@ -50,17 +50,39 @@ export function resolveSettledThreadTimestamp(thread: SettledThreadTimestampInpu
   return toSortableTimestamp(thread.updatedAt) === null ? null : thread.updatedAt;
 }
 
+/**
+ * The threads whose activity counts as a row's own when a list sorts. A
+ * sidebar family root passes its nested conversations, so the family moves
+ * when one of them does; a row on its own is just itself.
+ */
+export type ThreadSortFamily<T> = (thread: T) => readonly T[];
+
+/** Newest of `timestampMs` over a row's family; the row alone without one. */
+export function latestFamilyTimestampMs<T>(
+  thread: T,
+  familyOf: ThreadSortFamily<T> | undefined,
+  timestampMs: (member: T) => number,
+): number {
+  return familyOf === undefined
+    ? timestampMs(thread)
+    : Math.max(timestampMs(thread), ...familyOf(thread).map(timestampMs));
+}
+
 /** Settled rows are history, so they order by when the work ENDED, newest
     first, with an id tiebreak. Each key resolves once per sort, not once
     per comparison. Shared by web and mobile so both render the same order. */
 export function sortSettledThreads<T extends SettledThreadTimestampInput & { readonly id: string }>(
   threads: readonly T[],
+  familyOf?: ThreadSortFamily<T>,
 ): T[] {
   return threads
-    .map((thread) => {
-      const timestamp = resolveSettledThreadTimestamp(thread);
-      return { thread, timestampMs: timestamp === null ? 0 : Date.parse(timestamp) };
-    })
+    .map((thread) => ({
+      thread,
+      timestampMs: latestFamilyTimestampMs(thread, familyOf, (member) => {
+        const timestamp = resolveSettledThreadTimestamp(member);
+        return timestamp === null ? 0 : Date.parse(timestamp);
+      }),
+    }))
     .sort(
       (left, right) =>
         right.timestampMs - left.timestampMs || left.thread.id.localeCompare(right.thread.id),
@@ -339,7 +361,9 @@ export function sortPinnedThreadsByOrderKey<
 }
 
 /** New and reopened threads lead the active list. Arranged threads follow
-    their saved keys; activity leaves both groups in place. */
+    their saved keys; activity leaves both groups in place. With `familyOf`,
+    a new or reopened thread in a row's family leads the same way, and an
+    arranged row still stays where the user put it. */
 export function sortActiveThreadsByOrderKey<
   T extends {
     readonly id: string;
@@ -348,12 +372,15 @@ export function sortActiveThreadsByOrderKey<
     readonly activeOrderKey?: string | null | undefined;
     readonly environmentId?: string | undefined;
   },
->(threads: readonly T[]): T[] {
+>(threads: readonly T[], familyOf?: ThreadSortFamily<T>): T[] {
   if (threads.length < 2) return [...threads];
   const timestamps = new Map<T, number>();
   for (const thread of threads) {
     if (thread.activeOrderKey == null) {
-      timestamps.set(thread, activeThreadAnchorTimestampMs(thread));
+      timestamps.set(
+        thread,
+        latestFamilyTimestampMs(thread, familyOf, activeThreadAnchorTimestampMs),
+      );
     }
   }
   return [...threads].sort((left, right) => {

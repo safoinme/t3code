@@ -124,6 +124,64 @@ device keeps its own choice.
 While this is on, the active list is ordered by when each thread last came back to you, so you
 cannot drag or move threads within it. Your saved order returns when you turn it off.
 
+## Group threads into trees
+
+On web and desktop, the sidebar nests related threads under one parent. A fork sits
+under the thread it was forked from, and the subagents a thread starts sit under that
+thread. A closed tree still reports what is inside: how many threads, and whether any
+need an approval or an answer, finished unread, are working, or are waiting on
+background work. The thread you have open stays visible even when its tree is closed.
+A tree of subagents alone starts closed.
+
+A tree has three levels: a parent, the threads under it, and the threads under
+those. When forks or subagents go deeper than that, the deeper ones are listed on
+the third level, next to the thread they came from.
+
+To group threads yourself, use a thread's menu, in the sidebar or in the chat header:
+
+- **New subthread** starts a separate conversation under that thread, on the same
+  project, branch and worktree, with the project's permissions and default model.
+  It does not share the parent's history, and the parent does not wait on it.
+- **Move under…** opens a search over every thread on the same machine, in any
+  project and any section, and places the thread under the one you pick. You can
+  also drag a thread to the right over the row you want as its parent, then release.
+  The dragged row says where it will go; over a spot that cannot take it, it says so
+  and releasing changes nothing.
+- **Move to top level** takes a thread out of its parent. It is also how you keep
+  a thread at the top when its parent is archived: without it, the thread goes back
+  under the parent when the parent returns.
+- **Return to original parent** puts a fork or subagent you moved back where it
+  started.
+
+You cannot add a fourth level. New subthread is not offered on a thread on the
+third level, and a thread moves together with the threads under it, so a thread
+that already has two levels under it can only sit at the top.
+
+Grouping only changes where a thread appears. Its conversation, project, branch,
+worktree and pull requests stay the same, and so does which thread a fork or
+subagent came from. A thread you nest keeps its own pin, snooze and settled state.
+
+A tree takes one place in the list, where its parent belongs: pin, reorder, settle
+or snooze the parent and the whole tree follows. The exception keeps live work in
+view. A snoozed or settled parent stays in the inbox for as long as a thread nested
+under it is still there, and returns to its shelf when the last one is parked.
+While it is held there you cannot drag it; its own menu still works. Pins you
+arranged keep their order, and a tree moves up the other sections when a thread in
+it is started, reopened or finishes, the same as a thread on its own would.
+
+Searching the sidebar shows each match under the threads it is nested in, opening
+closed trees to reach it. Clearing the search puts every tree back the way you left
+it.
+
+When a parent is archived, deleted or filtered out, its threads stay in the list at
+the top level, subagents included. A subagent nested under its parent only opens and
+shows its status: pin, settle, snooze, archive and delete are offered on the tree's
+other threads. A subagent at the top level has the full menu, so you can settle or
+archive it there.
+
+Grouping needs an up-to-date server on the thread's machine. The mobile app does
+not show trees: it lists threads flat and leaves subagents out.
+
 ## Settle finished work
 
 Choose **Settle thread** from its menu to move finished work out of the active list

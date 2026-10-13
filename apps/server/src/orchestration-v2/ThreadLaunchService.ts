@@ -84,6 +84,8 @@ export interface ThreadLaunchInput {
   readonly interactionMode: ProviderInteractionMode;
   readonly workspaceStrategy: ThreadLaunchWorkspaceStrategy;
   readonly initialMessage?: ThreadLaunchInitialMessage;
+  /** Create a subthread: the sidebar nests the new thread under this one. Display only. */
+  readonly sidebarParentThreadId?: ThreadId;
   readonly importedNativeThread?: {
     readonly ref: {
       readonly driver: ProviderDriverKind;
@@ -770,6 +772,15 @@ const make = Effect.gen(function* () {
           "update-thread",
         )("Reusing an existing thread requires a thread id.");
       }
+      // Reuse claims an existing thread without creating one, so a sidebar
+      // parent would be dropped. Refuse it instead of launching at the top.
+      if (input.reuseExistingThread === true && input.sidebarParentThreadId !== undefined) {
+        return yield* mapError(
+          input,
+          "update-thread",
+          input.threadId,
+        )("A reused thread keeps its sidebar placement; move it instead.");
+      }
 
       const launchReceipt = yield* readReceipt(input, input.commandId);
       yield* threads.assertProviderInstanceEnabled({
@@ -859,6 +870,9 @@ const make = Effect.gen(function* () {
                 ...(input.importedNativeThread === undefined
                   ? {}
                   : { importedNativeThread: input.importedNativeThread }),
+                ...(input.sidebarParentThreadId === undefined
+                  ? {}
+                  : { sidebarParentThreadId: input.sidebarParentThreadId }),
                 createdBy: input.createdBy,
                 creationSource: input.creationSource,
               });

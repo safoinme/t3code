@@ -101,6 +101,98 @@ it.effect("attributes a launched thread's first message to the calling thread", 
   }),
 );
 
+it.effect("launches a subthread under an existing thread and refuses a missing parent", () =>
+  Effect.gen(function* () {
+    const sourceThreadId = ThreadId.make("source-thread");
+    const projectId = ProjectId.make("project");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const modelSelection = { instanceId: providerInstanceId, model: "gpt-5" };
+    const caller = {
+      id: sourceThreadId,
+      projectId,
+      providerInstanceId,
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      activeRunId: "active-run",
+      archivedAt: null,
+      deletedAt: null,
+    } as OrchestrationV2ThreadShell;
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const layerDependencies = Layer.mergeAll(
+      ServerSettings.layerTest(),
+      NodeCrypto.layer,
+      Layer.succeed(McpInvocationContext.McpInvocationContext, {
+        environmentId: EnvironmentId.make("environment"),
+        requestNamespace: "session",
+        thread: {
+          threadId: sourceThreadId,
+          providerSessionId: "session",
+          providerInstanceId,
+        },
+        client: undefined,
+        issuedAt: 0,
+        capabilities: new Set(["orchestration" as const]),
+      }),
+      Layer.mock(ThreadManagement.ThreadManagementService)({
+        getThreadShell: (threadId) => Effect.succeed(threadId === sourceThreadId ? caller : null),
+      }),
+      Layer.mock(ThreadLaunch.ThreadLaunchService)({
+        launch: (input) => {
+          launched.push(input);
+          return Effect.succeed({
+            threadId: input.threadId,
+            projection: {
+              thread: { id: input.threadId, projectId, modelSelection },
+              runs: [],
+            },
+            resumed: false,
+          } as unknown as ThreadLaunch.ThreadLaunchResult);
+        },
+      }),
+      Layer.mock(Project.ProjectService)({}),
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
+      Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+      NodeServices.layer,
+      ServerConfig.layerTest(process.cwd(), { prefix: "t3-subthread-launch-" }).pipe(
+        Layer.provide(NodeServices.layer),
+      ),
+    );
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+          Layer.provide(layerDependencies),
+        ),
+      ),
+    );
+    const handle = (params: Parameters<typeof toolkit.handle<"t3_thread_launch">>[1]) =>
+      toolkit
+        .handle("t3_thread_launch", params)
+        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(layerDependencies));
+
+    yield* handle({ title: "Subthread", sidebarParentThreadId: sourceThreadId });
+    expect(launched).toHaveLength(1);
+    // A sidebar parent, and still an ordinary new thread: no message is sent
+    // on the parent's behalf and nothing marks it as delegated work.
+    expect(launched[0]).toMatchObject({ sidebarParentThreadId: sourceThreadId, projectId });
+    expect(launched[0]?.initialMessage).toBeUndefined();
+
+    const refused = yield* handle({
+      title: "Orphan",
+      sidebarParentThreadId: ThreadId.make("missing-thread"),
+    });
+    expect(refused.at(-1)?.result).toMatchObject({
+      code: "invalid_request",
+      message: "The sidebar parent thread was not found.",
+    });
+    expect(launched).toHaveLength(1);
+
+    // Without the field a launch stays top level, as before.
+    yield* handle({ title: "Top level" });
+    expect(launched[1]?.sidebarParentThreadId).toBeUndefined();
+  }),
+);
+
 it.effect("launches a scratch thread into the Scratch project", () =>
   Effect.gen(function* () {
     const sourceThreadId = ThreadId.make("source-thread");

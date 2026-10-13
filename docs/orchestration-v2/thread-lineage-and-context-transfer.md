@@ -84,6 +84,8 @@ type ThreadRelationshipKind =
 
 Relationships are product-level and provider-neutral. A fork is not the same thing as a provider-native fork. A provider-native fork is one possible resolution strategy for a fork relationship.
 
+Where a thread appears in the sidebar tree is not a thread relationship. `sidebarOrganization` on the thread is display state the user owns: follow the recorded parent, stay at the top level, or sit under a chosen thread. It must never feed history sharing, task ownership, resume, or merge-back, and code that needs ancestry reads `lineage` and `forkedFrom`, never the sidebar parent. The reverse also holds: moving a thread in the sidebar never rewrites lineage, which is why returning to the recorded parent is its own explicit choice. The server rejects a sidebar parent that is missing, the thread itself, or one that would close a cycle. It also holds a chosen parent to `SIDEBAR_TREE_MAX_DEPTH`, counting the threads nested under the one that moves. Recorded ancestry is not held to that limit, and neither is returning to it or moving to the top level, so a fork or subagent chain can be deeper than the sidebar draws and there is always a way out of a tree. Commands otherwise serialize per thread, which would let two crossing moves each pass that check, so every command that changes a placement also holds one sidebar organization lock from its cycle check through its commit. It is taken inside the moved thread's lock, and nothing run under it takes a thread lock.
+
 ### Source Point
 
 Source point describes the exact state being transferred.

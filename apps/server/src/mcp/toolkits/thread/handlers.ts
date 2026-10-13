@@ -317,6 +317,33 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         case "mark_unread":
           command = { ...common, type: "thread.mark-unread" };
           break;
+        case "move_under":
+          if (input.parentThreadId === undefined) {
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "move_under requires parentThreadId.",
+            });
+          }
+          command = {
+            ...common,
+            type: "thread.sidebar-organization.set",
+            organization: { type: "parent", threadId: input.parentThreadId },
+          };
+          break;
+        case "move_to_top_level":
+          command = {
+            ...common,
+            type: "thread.sidebar-organization.set",
+            organization: { type: "top-level" },
+          };
+          break;
+        case "restore_recorded_parent":
+          command = {
+            ...common,
+            type: "thread.sidebar-organization.set",
+            organization: { type: "automatic" },
+          };
+          break;
         default:
           command = { ...common, type: `thread.${input.action}` };
       }

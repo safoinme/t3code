@@ -135,6 +135,18 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             message:
               "Pass modelSelection: the project has no default model. orchestrator_capabilities lists providers and models.",
           });
+        // The orchestrator validates the parent again; this only names the
+        // problem before a launch is accepted.
+        if (input.sidebarParentThreadId !== undefined) {
+          const parent = yield* context.threads
+            .getThreadShell(input.sidebarParentThreadId)
+            .pipe(Effect.mapError(unavailable));
+          if (parent === null || parent.deletedAt !== null)
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "The sidebar parent thread was not found.",
+            });
+        }
         const result = yield* ThreadMessageIntake.launchThread({
           commandId,
           threadId,
@@ -144,6 +156,9 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           runtimeMode,
           interactionMode,
           workspaceStrategy: input.workspaceStrategy ?? { type: "root" },
+          ...(input.sidebarParentThreadId === undefined
+            ? {}
+            : { sidebarParentThreadId: input.sidebarParentThreadId }),
           ...(input.message === undefined && attachments.length === 0
             ? {}
             : {

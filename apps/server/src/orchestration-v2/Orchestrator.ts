@@ -131,6 +131,11 @@ import {
   ThreadForkServiceV2,
 } from "./ThreadForkService.ts";
 import { planThreadDeletion } from "./ThreadDeletion.ts";
+import {
+  layerLock as layerSidebarOrganizationLock,
+  sidebarOrganizationRejection,
+  ThreadSidebarOrganizationLock,
+} from "./ThreadSidebarOrganization.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
 
@@ -447,6 +452,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.unpin":
     case "thread.pin.reorder":
     case "thread.active.reorder":
+    case "thread.sidebar-organization.set":
     case "thread.visit":
     case "thread.mark-unread":
     case "thread.metadata.update":
@@ -838,6 +844,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+  const sidebarOrganizationLock = yield* ThreadSidebarOrganizationLock;
 
   const mapDispatchError =
     (command: OrchestrationV2ServerCommand) =>
@@ -2220,6 +2227,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       { concurrency: 1, discard: true },
     );
 
+  // A sidebar parent that does not exist reads as null, so the caller can
+  // reject it or end an ancestor walk there.
+  const readSidebarThread = (threadId: ThreadId) =>
+    projectionStore
+      .getThread(threadId)
+      .pipe(Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }));
+
+  const readSidebarChildren = (parentIds: ReadonlyArray<ThreadId>) =>
+    projectionStore.getSidebarChildThreadIds(parentIds);
+
   const dispatchThreadCreate = Effect.fn("orchestrationV2.dispatch.threadCreate")(function* (
     command: Extract<OrchestrationV2Command, { readonly type: "thread.create" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -2230,6 +2247,34 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       "orchestration_v2.thread_id": command.threadId,
       "orchestration_v2.driver": command.modelSelection.instanceId,
     });
+
+    const lineage = {
+      parentThreadId: null,
+      relationshipToParent: null,
+      rootThreadId: command.threadId,
+    };
+    // A subthread is a separate conversation: the parent is sidebar
+    // organization, so lineage still records this thread as its own root.
+    const sidebarOrganization =
+      command.sidebarParentThreadId === undefined
+        ? undefined
+        : { type: "parent" as const, threadId: command.sidebarParentThreadId };
+    if (sidebarOrganization !== undefined) {
+      const rejection = yield* sidebarOrganizationRejection({
+        thread: { id: command.threadId, lineage, forkedFrom: null },
+        organization: sidebarOrganization,
+        readThread: readSidebarThread,
+        // A thread that does not exist yet has nothing nested under it.
+        readChildren: () => Effect.succeed([]),
+      }).pipe(mapDispatchError(command));
+      if (rejection !== null) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: rejection,
+        });
+      }
+    }
 
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
@@ -2246,11 +2291,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       branch: command.branch,
       worktreePath: command.worktreePath,
       activeProviderThreadId: null,
-      lineage: {
-        parentThreadId: null,
-        relationshipToParent: null,
-        rootThreadId: command.threadId,
-      },
+      lineage,
+      ...(sidebarOrganization === undefined ? {} : { sidebarOrganization }),
       forkedFrom: null,
       createdAt: now,
       updatedAt: now,
@@ -2420,6 +2462,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           | "thread.unpin"
           | "thread.pin.reorder"
           | "thread.active.reorder"
+          | "thread.sidebar-organization.set"
           | "thread.mark-unread"
           | "thread.metadata.update"
           | "thread.pull-request.link"
@@ -2558,6 +2601,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         command.type === "thread.unpin" ||
         command.type === "thread.pin.reorder" ||
         command.type === "thread.active.reorder" ||
+        command.type === "thread.sidebar-organization.set" ||
         command.type === "thread.pull-request.sync") &&
       thread.archivedAt !== null
     ) {
@@ -2586,6 +2630,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandType: command.type,
         cause: `Thread ${command.threadId} is not active and cannot be reordered.`,
       });
+    }
+    if (command.type === "thread.sidebar-organization.set") {
+      const rejection = yield* sidebarOrganizationRejection({
+        thread,
+        organization: command.organization,
+        readThread: readSidebarThread,
+        readChildren: readSidebarChildren,
+      }).pipe(mapDispatchError(command));
+      if (rejection !== null) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: rejection,
+        });
+      }
     }
     if (command.type === "thread.pull-request.sync") {
       const project = yield* projects.get(command.projectId).pipe(mapDispatchError(command));
@@ -2947,6 +3006,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             updatedAt: thread.updatedAt,
           };
         }
+        case "thread.sidebar-organization.set":
+          // Moving a row in the sidebar is not thread activity, and it never
+          // touches lineage: only where clients draw the thread.
+          return { ...thread, sidebarOrganization: command.organization };
         case "thread.mark-unread":
           return { ...thread, lastVisitedAt: markUnreadVisitedAt };
         case "thread.metadata.update": {
@@ -3255,6 +3318,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return "thread.pin-reordered" as const;
         case "thread.active.reorder":
           return "thread.active-reordered" as const;
+        case "thread.sidebar-organization.set":
+          return "thread.sidebar-organized" as const;
         case "thread.mark-unread":
           return "thread.marked-unread" as const;
         case "thread.metadata.update":
@@ -10690,6 +10755,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.unpin":
       case "thread.pin.reorder":
       case "thread.active.reorder":
+      case "thread.sidebar-organization.set":
       case "thread.mark-unread":
       case "thread.metadata.update":
       case "thread.pull-request.link":
@@ -11095,9 +11161,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const dispatchWithReceipt = (command: OrchestrationV2ServerCommand) =>
     Effect.gen(function* () {
+      // Lock order: the command's thread first, then the sidebar organization
+      // lock, which spans the cycle check and its commit. Nothing run under
+      // the organization lock takes a thread lock, so the two never invert.
+      const changesSidebarOrganization =
+        command.type === "thread.sidebar-organization.set" ||
+        (command.type === "thread.create" && command.sidebarParentThreadId !== undefined);
       const dispatch = threadDispatch.withLock(
         commandThreadId(command),
-        dispatchWithReceiptEffect(command),
+        changesSidebarOrganization
+          ? sidebarOrganizationLock.withLock(dispatchWithReceiptEffect(command))
+          : dispatchWithReceiptEffect(command),
       );
       if (
         command.type !== "message.dispatch" ||
@@ -11465,6 +11539,7 @@ export const layer: Layer.Layer<
   | ThreadForkServiceV2
 > = Layer.effect(OrchestratorV2, makeOrchestrator()).pipe(
   Layer.provide(ThreadCommandExecutor.layer),
+  Layer.provide(layerSidebarOrganizationLock),
 );
 
 const layerUnavailable: Layer.Layer<OrchestratorV2> = Layer.succeed(

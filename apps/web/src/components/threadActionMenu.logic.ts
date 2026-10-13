@@ -8,6 +8,10 @@ import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled"
  */
 export type ThreadActionMenuId =
   | "new-thread-on-branch"
+  | "new-subthread"
+  | "move-under"
+  | "move-to-top-level"
+  | "return-to-recorded-parent"
   | "filter-by-project"
   | "project-settings"
   | "pin"
@@ -81,6 +85,31 @@ export interface ThreadActionMenuState {
     /** True when the list is already scoped to this thread's project. */
     readonly isActive: boolean;
   } | null;
+  /**
+   * Where the thread sits in the sidebar tree. Null against servers that
+   * cannot store a placement, where none of the tree items show.
+   */
+  readonly sidebarTree: {
+    /** False for a grandchild: a thread under it would be a fourth level. */
+    readonly canAddSubthread: boolean;
+    /**
+     * The thread has a stored parent, recorded or chosen, so "Move to top
+     * level" has a placement to clear. This is the stored relation, not the
+     * row as drawn: a thread whose parent is archived or missing sits at the
+     * top of the list and still returns under that parent when it comes back.
+     */
+    readonly hasSidebarParent: boolean;
+    /** The user moved it away from a recorded fork or subagent parent. */
+    readonly canReturnToRecordedParent: boolean;
+    /** Some thread can take this one; "Move under" opens the picker to choose it. */
+    readonly hasMoveTargets: boolean;
+  } | null;
+  /**
+   * True for a subagent's row nested in the sidebar tree. Its lifecycle stays
+   * with that family, so the row offers no pin, settle, snooze, archive or
+   * delete. The chat header keeps the full menu for the thread it shows.
+   */
+  readonly lifecycleOwnedByParent: boolean;
   readonly isPinned: boolean;
   readonly isSettled: boolean;
   /** False while the user has turned automatic settlement off for this thread. */
@@ -122,6 +151,8 @@ export function threadActionRequiresOperate(action: ThreadActionMenuId): boolean
 export function buildThreadActionMenuItems(
   state: ThreadActionMenuState,
 ): ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> {
+  const tree = state.sidebarTree;
+  const ownsLifecycle = !state.lifecycleOwnedByParent;
   const items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> = [
     ...(state.branch
       ? [
@@ -132,7 +163,34 @@ export function buildThreadActionMenuItems(
           },
         ]
       : []),
-    ...(state.supports.pinning
+    // Sidebar organization only: none of these change the conversation, its
+    // lineage or its workspace.
+    ...(tree
+      ? [
+          ...(tree.canAddSubthread
+            ? [
+                {
+                  id: "new-subthread" as const,
+                  label: "New subthread",
+                  icon: "message-square-plus",
+                },
+              ]
+            : []),
+          {
+            id: "move-under" as const,
+            label: "Move under…",
+            icon: "folder-tree",
+            disabled: !tree.hasMoveTargets,
+          },
+          ...(tree.hasSidebarParent
+            ? [{ id: "move-to-top-level" as const, label: "Move to top level" }]
+            : []),
+          ...(tree.canReturnToRecordedParent
+            ? [{ id: "return-to-recorded-parent" as const, label: "Return to original parent" }]
+            : []),
+        ]
+      : []),
+    ...(state.supports.pinning && ownsLifecycle
       ? [
           state.isPinned
             ? { id: "unpin" as const, label: "Unpin thread", icon: "pin-off" }
@@ -142,14 +200,14 @@ export function buildThreadActionMenuItems(
     // Both lifecycle actions stay available on pinned threads: settling
     // clears the pin ("done" beats "keep on top"), and snoozing hides the
     // card until wake with the pin intact.
-    ...(state.supports.settlement
+    ...(state.supports.settlement && ownsLifecycle
       ? [
           state.isSettled
             ? { id: "unsettle" as const, label: "Un-settle thread", icon: "circle-check" }
             : { id: "settle" as const, label: "Settle thread", icon: "circle-check" },
         ]
       : []),
-    ...(state.supports.snooze
+    ...(state.supports.snooze && ownsLifecycle
       ? [
           state.isSnoozed
             ? { id: "unsnooze" as const, label: "Wake thread", icon: "clock" }
@@ -195,7 +253,7 @@ export function buildThreadActionMenuItems(
     // this is a setting, and it sits with the other per-thread settings
     // rather than the lifecycle verbs above. Disabled keeps long-running
     // threads out of the settled shelf no matter how quiet they get.
-    ...(state.supports.autoSettleOptOut
+    ...(state.supports.autoSettleOptOut && ownsLifecycle
       ? [
           {
             id: "auto-settle" as const,
@@ -235,19 +293,23 @@ export function buildThreadActionMenuItems(
     // (stays visible in the Settled shelf) and Delete (clears history for
     // good), so it sits beside Delete without borrowing its destructive
     // styling.
-    {
-      id: "archive",
-      label: "Archive thread",
-      icon: "archive",
-      disabled: state.isRunning,
-      separatorBefore: true,
-    },
-    {
-      id: "delete",
-      label: "Delete",
-      destructive: true,
-      icon: "trash",
-    },
+    ...(ownsLifecycle
+      ? [
+          {
+            id: "archive" as const,
+            label: "Archive thread",
+            icon: "archive",
+            disabled: state.isRunning,
+            separatorBefore: true,
+          },
+          {
+            id: "delete" as const,
+            label: "Delete",
+            destructive: true,
+            icon: "trash",
+          },
+        ]
+      : []),
   ];
   return state.canOperate
     ? items

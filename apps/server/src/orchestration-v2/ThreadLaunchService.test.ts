@@ -1111,6 +1111,64 @@ it.effect("runs a Scratch thread launched at the root in its own folder", () =>
   }),
 );
 
+it.effect("launches a subthread under a sidebar parent without making it a child thread", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness();
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const parent = yield* launches.launch(
+        launchInput({ command: "command:launch:sidebar-parent", thread: "thread:sidebar-parent" }),
+      );
+      const subthread = yield* launches.launch({
+        ...launchInput({
+          command: "command:launch:sidebar-subthread",
+          thread: "thread:sidebar-subthread",
+        }),
+        sidebarParentThreadId: parent.threadId,
+      });
+      const stored = (yield* threads.getThreadProjection(subthread.threadId)).thread;
+      assert.deepEqual(stored.sidebarOrganization, { type: "parent", threadId: parent.threadId });
+      // Only the sidebar ties the two: the subthread is its own lineage root.
+      assert.deepEqual(stored.lineage, {
+        parentThreadId: null,
+        relationshipToParent: null,
+        rootThreadId: subthread.threadId,
+      });
+      assert.isNull(stored.forkedFrom);
+
+      // The orchestrator refuses a parent that does not exist, and no thread is left behind.
+      const missingParent = yield* launches
+        .launch({
+          ...launchInput({
+            command: "command:launch:sidebar-orphan",
+            thread: "thread:sidebar-orphan",
+          }),
+          sidebarParentThreadId: ThreadId.make("thread:sidebar-missing"),
+        })
+        .pipe(Effect.flip);
+      assert.equal(missingParent._tag, "ThreadLaunchError");
+      assert.isNull(yield* threads.getThreadShell(ThreadId.make("thread:sidebar-orphan")));
+
+      // Reuse creates nothing, so a parent passed with it is refused, not dropped.
+      const reused = yield* launches
+        .launch({
+          ...launchInput({
+            command: "command:launch:sidebar-reuse",
+            thread: "thread:sidebar-parent",
+          }),
+          reuseExistingThread: true,
+          sidebarParentThreadId: subthread.threadId,
+        })
+        .pipe(Effect.flip);
+      assert.equal(reused._tag, "ThreadLaunchError");
+      assert.isUndefined(
+        (yield* threads.getThreadProjection(parent.threadId)).thread.sidebarOrganization,
+      );
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
 it.effect("names the worktree itself when the client provides no branch", () =>
   Effect.gen(function* () {
     const harness = makeHarness();
