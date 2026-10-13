@@ -1111,6 +1111,41 @@ it.effect("runs a Scratch thread launched at the root in its own folder", () =>
   }),
 );
 
+it.effect(
+  "records an ordinary MCP creator with and without a prompt while retaining independent lineage",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const creatorThreadId = ThreadId.make("creator");
+        for (const message of [undefined, "Task prompt"]) {
+          const result = yield* launches.launch({
+            ...launchInput({
+              command: `command:creator:${message ?? "empty"}`,
+              thread: `thread:creator:${message ?? "empty"}`,
+              ...(message === undefined ? {} : { message }),
+            }),
+            createdBy: "agent",
+            creationSource: "mcp",
+            creatorThreadId,
+          });
+          const stored = (yield* threads.getThreadProjection(result.threadId)).thread;
+          assert.strictEqual(stored.creatorThreadId, creatorThreadId);
+          assert.deepEqual(stored.lineage, {
+            parentThreadId: null,
+            relationshipToParent: null,
+            rootThreadId: result.threadId,
+          });
+          assert.isNull(stored.forkedFrom);
+          assert.isNull(stored.worktreePath);
+          assert.isUndefined(stored.sidebarOrganization);
+        }
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
 it.effect("launches a subthread under a sidebar parent without making it a child thread", () =>
   Effect.gen(function* () {
     const harness = makeHarness();

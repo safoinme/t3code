@@ -118,7 +118,7 @@ export type OrchestrationV2AppThreadLineage = typeof OrchestrationV2AppThreadLin
  * ownership, or the thread's project and workspace.
  */
 export const OrchestrationV2ThreadSidebarOrganization = Schema.Union([
-  /** Follow the recorded fork or subagent parent, when there is one. */
+  /** Follow the recorded fork/subagent parent or ordinary conversation creator. */
   Schema.Struct({ type: Schema.Literal("automatic") }),
   /** Stay at the top level even when lineage records a parent. */
   Schema.Struct({ type: Schema.Literal("top-level") }),
@@ -397,6 +397,9 @@ export const OrchestrationV2AppThread = Schema.Struct({
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   lineage: OrchestrationV2AppThreadLineage,
+  /** Creator of an independent conversation. Null records a known absent creator;
+      omission allows recovery of legacy MCP origin from the first user dispatch. */
+  creatorThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   /** Absent means automatic; threads from before sidebar trees never carry it. */
   sidebarOrganization: Schema.optional(OrchestrationV2ThreadSidebarOrganization),
   forkedFrom: Schema.NullOr(
@@ -473,10 +476,14 @@ export function isProviderNativeSubagentThread(
 /**
  * The thread a sidebar tree nests this one under, before checking that the
  * parent is visible. A run fork records the thread it branched from in
- * `forkedFrom`, which can differ from the lineage parent.
+ * `forkedFrom`, which can differ from the lineage parent. An independent
+ * agent-created conversation follows its creator without changing lineage.
  */
 export function resolveSidebarParentThreadId(
-  thread: Pick<OrchestrationV2AppThread, "lineage" | "forkedFrom" | "sidebarOrganization">,
+  thread: Pick<
+    OrchestrationV2AppThread,
+    "lineage" | "forkedFrom" | "sidebarOrganization" | "creatorThreadId"
+  >,
 ): ThreadId | null {
   switch (thread.sidebarOrganization?.type) {
     case "top-level":
@@ -486,7 +493,7 @@ export function resolveSidebarParentThreadId(
     default:
       return thread.forkedFrom?.type === "run"
         ? thread.forkedFrom.threadId
-        : thread.lineage.parentThreadId;
+        : (thread.lineage.parentThreadId ?? thread.creatorThreadId ?? null);
   }
 }
 
@@ -1280,6 +1287,53 @@ export const OrchestrationV2ConversationMessage = Schema.Struct({
 });
 export type OrchestrationV2ConversationMessage = typeof OrchestrationV2ConversationMessage.Type;
 
+/** Legacy launch APIs gave the initial message the creation request's identity.
+ * Require that identity as well as attribution: a later send to an empty
+ * agent-created conversation is not evidence of who created it. */
+export function resolveThreadCreatorThreadId(
+  thread: Pick<
+    OrchestrationV2AppThread,
+    | "id"
+    | "createdBy"
+    | "creationSource"
+    | "creatorThreadId"
+    | "lineage"
+    | "forkedFrom"
+    | "historyOrigin"
+  >,
+  firstMessage:
+    | (Pick<OrchestrationV2ConversationMessage, "id" | "createdBy" | "creationSource"> & {
+        readonly senderThreadId?: OrchestrationV2ConversationMessage["senderThreadId"] | null;
+      })
+    | undefined,
+): ThreadId | null {
+  if (thread.creatorThreadId !== undefined) return thread.creatorThreadId;
+  if (
+    thread.createdBy !== "agent" ||
+    thread.creationSource !== "mcp" ||
+    thread.lineage.parentThreadId !== null ||
+    thread.forkedFrom !== null ||
+    thread.historyOrigin === "v1_import" ||
+    firstMessage?.createdBy !== "agent" ||
+    firstMessage.creationSource !== "mcp"
+  )
+    return null;
+  let initialMessageId: string;
+  if (thread.id.startsWith("thread:mcp:")) {
+    const parts = thread.id.split(":");
+    // create_threads encodes namespace/request and appends the batch index.
+    // A request literally named thread-send overlaps the later-send ID format;
+    // its legacy creator is ambiguous and must stay unknown.
+    if (parts.length !== 5 || parts[3] === "thread-send" || !/^\d+$/.test(parts[4] ?? ""))
+      return null;
+    initialMessageId = `message:mcp:${thread.id.slice("thread:mcp:".length)}`;
+  } else if (thread.id.startsWith("mcp:") && thread.id.split(":").length === 2) {
+    // t3_thread_launch uses newCommandId for threadId and initial messageId.
+    initialMessageId = thread.id;
+  } else return null;
+  return firstMessage.id === initialMessageId ? (firstMessage.senderThreadId ?? null) : null;
+}
+
 export const OrchestrationV2PlanStep = Schema.Struct({
   id: TrimmedNonEmptyString,
   text: TrimmedNonEmptyString,
@@ -1994,6 +2048,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   /** Pull request discovered from the thread's current branch. */
   branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   lineage: OrchestrationV2AppThreadLineage,
+  creatorThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   /** Omitted by servers that predate sidebar trees, and for automatic threads. */
   sidebarOrganization: Schema.optional(OrchestrationV2ThreadSidebarOrganization),
   forkedFrom: Schema.NullOr(OrchestrationV2AppThread.fields.forkedFrom),
@@ -2775,6 +2830,8 @@ export const OrchestrationV2Command = Schema.Union([
      * older servers drop the field and create a top-level thread.
      */
     sidebarParentThreadId: Schema.optional(ThreadId),
+    /** Actual caller, recorded at creation even when there is no prompt. Display only. */
+    creatorThreadId: Schema.optional(ThreadId),
     importedNativeThread: Schema.optional(
       Schema.Struct({
         ref: Schema.Struct({

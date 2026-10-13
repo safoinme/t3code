@@ -10,7 +10,7 @@ import {
 
 // Sidebar thread trees. A family is a root thread with the threads nested
 // under it. Parents come from sidebar organization (see
-// resolveSidebarParentThreadId): the recorded fork or subagent parent unless
+// resolveSidebarParentThreadId): the creator, fork or subagent parent unless
 // the user chose a parent or the top level. Nothing here reads titles or
 // branches, and nothing here changes lineage.
 //
@@ -24,7 +24,13 @@ import {
 
 type SidebarTreeThread = Pick<
   SidebarThreadSummary,
-  "id" | "environmentId" | "lineage" | "forkedFrom" | "sidebarOrganization" | "createdAt"
+  | "id"
+  | "environmentId"
+  | "lineage"
+  | "forkedFrom"
+  | "sidebarOrganization"
+  | "createdAt"
+  | "creatorThreadId"
 >;
 
 /** Thread ids repeat across environments, so every tree lookup uses this key. */
@@ -219,6 +225,49 @@ export function resolveSidebarFamilyExpanded(
   return choice ?? children.some((child) => !isSidebarSubagentThread(child));
 }
 
+/** Share the stored choices without reusing a family's ordinary expansion. */
+export function sidebarSubagentGroupKey(parentKey: string): string {
+  return `${parentKey}:subagents`;
+}
+
+export function sidebarOrdinaryGroupKey(parentKey: string): string {
+  return `${parentKey}:ordinary-v2`;
+}
+
+/** A legacy choice belongs to ordinary rows only if they were already nested
+ * by fork/lineage or manual placement before creator grouping existed. */
+export function resolveSidebarOrdinaryExpanded(
+  choices: Readonly<Record<string, boolean>>,
+  parentKey: string,
+  children: ReadonlyArray<SidebarTreeThread>,
+): boolean {
+  const hadOrdinaryFamily = children.some(
+    (child) =>
+      !isSidebarSubagentThread(child) &&
+      resolveSidebarParentThreadId({ ...child, creatorThreadId: null }) !== null,
+  );
+  return resolveSidebarFamilyExpanded(
+    choices[sidebarOrdinaryGroupKey(parentKey)] ??
+      (hadOrdinaryFamily ? choices[parentKey] : undefined),
+    children,
+  );
+}
+
+export type SidebarFamilyGroupKind = "ordinary" | "subagents";
+
+/** Null means a bare row, with no family padding or sortable wrapper. */
+export function sidebarFamilyGroupKinds<T extends Pick<SidebarThreadSummary, "lineage">>(
+  tree: Pick<SidebarThreadTree<T>, "childrenByKey">,
+  parentKey: string,
+): ReadonlyArray<SidebarFamilyGroupKind> | null {
+  const children = tree.childrenByKey.get(parentKey) ?? [];
+  if (children.length === 0) return null;
+  const groups: SidebarFamilyGroupKind[] = [];
+  if (children.some((child) => !isSidebarSubagentThread(child))) groups.push("ordinary");
+  if (children.some(isSidebarSubagentThread)) groups.push("subagents");
+  return groups;
+}
+
 export interface SidebarFamilyRow<T> {
   readonly key: string;
   readonly thread: T;
@@ -237,6 +286,7 @@ export function flattenSidebarFamily<T extends SidebarTreeThread>(
   rootKey: string,
   options: {
     readonly isExpanded: (key: string, children: ReadonlyArray<T>) => boolean;
+    readonly isSubagentsExpanded?: (key: string) => boolean;
     readonly revealKey: string | null;
   },
 ): SidebarFamilyRow<T>[] {
@@ -248,9 +298,17 @@ export function flattenSidebarFamily<T extends SidebarTreeThread>(
   const visit = (parentKey: string, depth: number) => {
     const children = tree.childrenByKey.get(parentKey) ?? [];
     const open = options.isExpanded(parentKey, children);
-    for (const thread of children) {
+    // Render ordinary conversations before the separately collapsed agent group.
+    const ordered = [
+      ...children.filter((thread) => !isSidebarSubagentThread(thread)),
+      ...children.filter(isSidebarSubagentThread),
+    ];
+    for (const thread of ordered) {
       const key = sidebarThreadKey(thread);
-      if (!open && !revealPath.has(key)) continue;
+      const groupOpen = isSidebarSubagentThread(thread)
+        ? (options.isSubagentsExpanded?.(parentKey) ?? false)
+        : open;
+      if (!groupOpen && !revealPath.has(key)) continue;
       rows.push({ key, thread, depth, childCount: tree.childrenByKey.get(key)?.length ?? 0 });
       visit(key, depth + 1);
     }
@@ -292,7 +350,11 @@ export function buildSidebarSearchRows<T extends SidebarTreeThread>(
       const index = rows.length;
       rows.push({ key, thread, depth, isMatch: ownRank !== undefined });
       let best = ownRank ?? Number.POSITIVE_INFINITY;
-      for (const child of tree.childrenByKey.get(key) ?? []) {
+      const children = (tree.childrenByKey.get(key) ?? []).toSorted(
+        (left, right) =>
+          Number(isSidebarSubagentThread(left)) - Number(isSidebarSubagentThread(right)),
+      );
+      for (const child of children) {
         best = Math.min(best, visit(child, depth + 1));
       }
       if (best === Number.POSITIVE_INFINITY) rows.length = index;
@@ -343,6 +405,40 @@ export interface SidebarDescendantSummary {
     readonly status: SidebarFamilySummaryStatus;
     readonly count: number;
   }>;
+}
+
+export interface SidebarGroupSummary extends SidebarDescendantSummary {
+  /** Opposite-kind descendants concealed by this group, labelled separately. */
+  readonly otherSessionCount: number;
+}
+
+/** Counts distinguish kinds; attention includes everything behind the toggle. */
+export function summarizeSidebarFamilyGroup<
+  T extends SidebarTreeThread &
+    Pick<
+      SidebarThreadSummary,
+      "projectId" | "hasPendingApprovals" | "hasPendingUserInput" | "runtime"
+    >,
+>(
+  tree: SidebarThreadTree<T>,
+  parentKey: string,
+  kind: SidebarFamilyGroupKind,
+  isUnread: (thread: T) => boolean,
+): SidebarGroupSummary {
+  const subagents = kind === "subagents";
+  const descendants = (tree.childrenByKey.get(parentKey) ?? []).flatMap((child) =>
+    isSidebarSubagentThread(child) === subagents
+      ? [child, ...collectSidebarDescendants(tree, sidebarThreadKey(child), sidebarThreadKey)]
+      : [],
+  );
+  const sessionCount = descendants.filter(
+    (thread) => isSidebarSubagentThread(thread) === subagents,
+  ).length;
+  return {
+    ...summarizeSidebarDescendants(descendants, isUnread),
+    sessionCount,
+    otherSessionCount: descendants.length - sessionCount,
+  };
 }
 
 /**

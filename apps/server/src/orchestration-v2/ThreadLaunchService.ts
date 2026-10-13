@@ -86,6 +86,7 @@ export interface ThreadLaunchInput {
   readonly initialMessage?: ThreadLaunchInitialMessage;
   /** Create a subthread: the sidebar nests the new thread under this one. Display only. */
   readonly sidebarParentThreadId?: ThreadId;
+  readonly creatorThreadId?: ThreadId;
   readonly importedNativeThread?: {
     readonly ref: {
       readonly driver: ProviderDriverKind;
@@ -873,6 +874,9 @@ const make = Effect.gen(function* () {
                 ...(input.sidebarParentThreadId === undefined
                   ? {}
                   : { sidebarParentThreadId: input.sidebarParentThreadId }),
+                ...(input.creatorThreadId === undefined
+                  ? {}
+                  : { creatorThreadId: input.creatorThreadId }),
                 createdBy: input.createdBy,
                 creationSource: input.creationSource,
               });

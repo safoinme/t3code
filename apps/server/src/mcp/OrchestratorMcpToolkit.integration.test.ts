@@ -2139,6 +2139,7 @@ describe("orchestrator MCP toolkit", () => {
               model: claudeModel,
             });
             const createdSource = yield* orchestrator.getThreadProjection(promptedThread.threadId);
+            expect(createdSource.thread.creatorThreadId).toBe(parentThreadId);
             expect(createdSource.messages[0]).toMatchObject({
               senderThreadId: parentThreadId,
             });
@@ -2156,6 +2157,7 @@ describe("orchestrator MCP toolkit", () => {
             expect(emptyProjection.thread).toMatchObject({
               createdBy: "agent",
               creationSource: "mcp",
+              creatorThreadId: parentThreadId,
             });
             expect(emptyProjection.thread.forkedFrom).toBeNull();
             expect(emptyProjection.runs).toEqual([]);

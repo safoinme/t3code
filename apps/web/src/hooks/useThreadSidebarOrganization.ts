@@ -21,6 +21,7 @@ import { useCallback, useMemo } from "react";
 import {
   canAddSidebarSubthread,
   listSidebarMoveTargets,
+  sidebarOrdinaryGroupKey,
   sidebarThreadKey,
 } from "../components/Sidebar.tree";
 import type {
@@ -44,7 +45,8 @@ import type { SidebarThreadSummary } from "../types";
 import { useLocalStorage } from "./useLocalStorage";
 
 // The user's open/closed choice per family parent, by scoped thread key.
-// Parents without an entry follow resolveSidebarFamilyExpanded's default.
+// Ordinary v2 and subagent choices are separate; old parent keys remain for
+// fork/manual families that existed before creator grouping.
 export const THREAD_FAMILY_EXPANDED_KEY = "t3code:sidebar:thread-family-expanded";
 export const ThreadFamilyExpansion = Schema.Record(Schema.String, Schema.Boolean);
 
@@ -76,6 +78,7 @@ export type ThreadSidebarOrganizationThread = Pick<
   | "lineage"
   | "forkedFrom"
   | "sidebarOrganization"
+  | "creatorThreadId"
 >;
 
 function failureToast(title: string, error: unknown) {
@@ -118,7 +121,10 @@ export function useThreadSidebarOrganization(input: {
         const parentKey = scopedThreadKey(
           scopeThreadRef(threadRef.environmentId, organization.threadId),
         );
-        setFamilyExpansion((current) => ({ ...current, [parentKey]: true }));
+        setFamilyExpansion((current) => ({
+          ...current,
+          [sidebarOrdinaryGroupKey(parentKey)]: true,
+        }));
       }
       void (async () => {
         const result = await setThreadSidebarOrganization({
@@ -171,7 +177,10 @@ export function useThreadSidebarOrganization(input: {
         }
         // The subthread is saved from here on, so open its family whether or
         // not the client goes on to open the conversation.
-        setFamilyExpansion((current) => ({ ...current, [sidebarThreadKey(parent)]: true }));
+        setFamilyExpansion((current) => ({
+          ...current,
+          [sidebarOrdinaryGroupKey(sidebarThreadKey(parent))]: true,
+        }));
         // The command's receipt can arrive before the thread reaches this
         // client. The thread route treats a thread it cannot find as missing
         // and leaves for another conversation, so wait for the shell first.
@@ -244,6 +253,7 @@ export function useThreadSidebarOrganization(input: {
             resolveSidebarParentThreadId({
               lineage: thread.lineage,
               forkedFrom: thread.forkedFrom,
+              creatorThreadId: thread.creatorThreadId,
             }) !== null,
           hasMoveTargets: listSidebarMoveTargets(threadByKey, sidebarThreadKey(thread)).length > 0,
         };

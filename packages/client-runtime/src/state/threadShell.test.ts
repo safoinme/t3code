@@ -48,6 +48,48 @@ function makeHarness(environmentIds: ReadonlyArray<EnvironmentId> = [environment
 }
 
 describe("v2 thread shell lists", () => {
+  it("carries creator placement through shell updates while mobile navigation excludes agents", () => {
+    const { registry, threads, snapshotAtom } = makeHarness();
+    const root = v2ThreadShell;
+    const task = { ...root, id: ThreadId.make("task"), creatorThreadId: root.id };
+    const agent = {
+      ...root,
+      id: ThreadId.make("agent"),
+      lineage: {
+        parentThreadId: root.id,
+        rootThreadId: root.id,
+        relationshipToParent: "subagent" as const,
+      },
+    };
+    const snapshot = { ...v2ShellSnapshot, threads: [root, task, agent] };
+    registry.set(snapshotAtom(environmentId), snapshot);
+    const dispose = registry.mount(threads.navigationThreadShellsAtom);
+    expect(
+      registry.get(threads.threadShellsAtom).find((thread) => thread.id === task.id)
+        ?.creatorThreadId,
+    ).toBe(root.id);
+    expect(registry.get(threads.navigationThreadShellsAtom).map((thread) => thread.id)).toEqual([
+      root.id,
+      task.id,
+    ]);
+    registry.set(
+      snapshotAtom(environmentId),
+      applyShellStreamEvent(snapshot, {
+        kind: "thread.updated",
+        location: "active",
+        sequence: 1,
+        thread: { ...task, sidebarOrganization: { type: "top-level" } },
+      }),
+    );
+    expect(
+      registry.get(threads.threadShellsAtom).find((thread) => thread.id === task.id),
+    ).toMatchObject({
+      creatorThreadId: root.id,
+      sidebarOrganization: { type: "top-level" },
+    });
+    dispose();
+    registry.dispose();
+  });
   it("preserves ordered reference arrays when a middle thread changes", () => {
     const { registry, threads, snapshotAtom } = makeHarness();
     const snapshot = {

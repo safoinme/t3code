@@ -2293,6 +2293,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       activeProviderThreadId: null,
       lineage,
       ...(sidebarOrganization === undefined ? {} : { sidebarOrganization }),
+      creatorThreadId:
+        command.createdBy === "agent" && command.creationSource === "mcp"
+          ? (command.creatorThreadId ?? null)
+          : null,
       forkedFrom: null,
       createdAt: now,
       updatedAt: now,

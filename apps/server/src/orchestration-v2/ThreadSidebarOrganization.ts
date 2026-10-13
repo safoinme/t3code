@@ -12,7 +12,7 @@ import * as Semaphore from "effect/Semaphore";
 
 type SidebarPlacement = Pick<
   OrchestrationV2AppThread,
-  "id" | "lineage" | "forkedFrom" | "sidebarOrganization"
+  "id" | "lineage" | "forkedFrom" | "sidebarOrganization" | "creatorThreadId"
 >;
 
 /**

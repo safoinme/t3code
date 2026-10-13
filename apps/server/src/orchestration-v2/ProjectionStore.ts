@@ -57,6 +57,7 @@ import {
   OrchestrationV2TurnItemJson as OrchestrationV2TurnItemJsonSchema,
   orchestrationV2RunWorkStartedAt,
   resolveSidebarParentThreadId,
+  resolveThreadCreatorThreadId,
   RunId,
   MessageId,
   RuntimeRequestId,
@@ -418,7 +419,8 @@ export interface ProjectionStoreV2Shape {
   /**
    * The threads the sidebar draws directly under any of `parentIds`: not
    * deleted, not archived, and with one of them as their sidebar parent (see
-   * resolveSidebarParentThreadId). Reads thread rows only.
+   * resolveSidebarParentThreadId). Legacy ordinary origins also read the first
+   * user message's creation metadata, never its text or full transcript.
    */
   readonly getSidebarChildThreadIds: (
     parentIds: ReadonlyArray<ThreadId>,
@@ -998,6 +1000,7 @@ type PayloadRow = {
 type ShellThreadRow = {
   readonly thread_id: string;
   readonly payload_json: string;
+  readonly first_user_message_payload_json: string | null;
   readonly forked_from_run_source_thread_id: string | null;
   readonly latest_run_id: string | null;
   readonly latest_run_status: string | null;
@@ -1134,6 +1137,16 @@ const decodeRuntimeRequestPayload = Schema.decodeUnknownEffect(
 );
 const decodeMessagePayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2ConversationMessageJsonSchema),
+);
+const decodeCreatorMessagePayload = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      id: OrchestrationV2ConversationMessageJsonSchema.fields.id,
+      createdBy: OrchestrationV2ConversationMessageJsonSchema.fields.createdBy,
+      creationSource: OrchestrationV2ConversationMessageJsonSchema.fields.creationSource,
+      senderThreadId: Schema.NullOr(ThreadId),
+    }),
+  ),
 );
 const decodePlanArtifact = Schema.decodeUnknownEffect(OrchestrationV2PlanArtifactSchema);
 const decodePlanPayload = (json: string) => decodePlanArtifact(parseEncodedPayload(json));
@@ -1424,6 +1437,21 @@ function secretRequestAsPendingInput(
   };
 }
 
+function threadWithCreatorFromProjection(projection: OrchestrationV2ThreadProjection) {
+  if (projection.thread.creatorThreadId !== undefined) return projection.thread;
+  const firstMessage = projection.messages
+    .filter((message) => message.role === "user" && message.threadId === projection.thread.id)
+    .toSorted(
+      (left, right) =>
+        DateTime.toEpochMillis(left.createdAt) - DateTime.toEpochMillis(right.createdAt) ||
+        (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
+    )[0];
+  return {
+    ...projection.thread,
+    creatorThreadId: resolveThreadCreatorThreadId(projection.thread, firstMessage),
+  };
+}
+
 export function threadShellFromProjection(
   projection: OrchestrationV2ThreadProjection,
 ): OrchestrationV2ThreadShell {
@@ -1508,6 +1536,7 @@ export function threadShellFromProjection(
       ? {}
       : { activeOrderKey: projection.thread.activeOrderKey }),
     lineage: projection.thread.lineage,
+    creatorThreadId: threadWithCreatorFromProjection(projection).creatorThreadId,
     ...(projection.thread.sidebarOrganization === undefined
       ? {}
       : { sidebarOrganization: projection.thread.sidebarOrganization }),
@@ -1779,6 +1808,7 @@ function shellFromState(input: {
       ? {}
       : { activeOrderKey: input.state.thread.activeOrderKey }),
     lineage: input.state.thread.lineage,
+    creatorThreadId: input.state.thread.creatorThreadId,
     ...(input.state.thread.sidebarOrganization === undefined
       ? {}
       : { sidebarOrganization: input.state.thread.sidebarOrganization }),
@@ -1838,6 +1868,35 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
   ProjectionStoreV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
+    // One indexed first-message lookup in the shell query, only for legacy MCP
+    // conversations. No chat fetch per sidebar row and no data backfill.
+    const firstCreatorMessage = sql`
+      CASE WHEN json_type(t.payload_json, '$.creatorThreadId') IS NULL
+        AND json_extract(t.payload_json, '$.createdBy') = 'agent'
+        AND json_extract(t.payload_json, '$.creationSource') = 'mcp'
+      THEN (
+        SELECT json_object(
+          'id', message.message_id,
+          'createdBy', json_extract(message.payload_json, '$.createdBy'),
+          'creationSource', json_extract(message.payload_json, '$.creationSource'),
+          'senderThreadId', json_extract(message.payload_json, '$.senderThreadId')
+        ) FROM orchestration_v2_projection_messages message
+        WHERE message.thread_id = t.thread_id AND message.role = 'user'
+        ORDER BY message.created_at ASC, message.message_id COLLATE BINARY ASC LIMIT 1
+      ) ELSE NULL END
+    `;
+    const decodeThreadWithCreator = (
+      row: PayloadRow & { readonly first_user_message_payload_json: string | null },
+    ) =>
+      Effect.gen(function* () {
+        const thread = yield* decodeThreadPayload(row.payload_json);
+        const firstMessage =
+          row.first_user_message_payload_json === null
+            ? undefined
+            : yield* decodeCreatorMessagePayload(row.first_user_message_payload_json);
+        return { ...thread, creatorThreadId: resolveThreadCreatorThreadId(thread, firstMessage) };
+      });
 
     // For run upserts: a snapshot without `path` keeps the value another event recorded there.
     const keepRecordedRunField = (payload: Statement.Fragment, path: string) => sql`
@@ -4305,14 +4364,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
 
     const getThread: ProjectionStoreV2Shape["getThread"] = (threadId) =>
       Effect.gen(function* () {
-        const rows = yield* sql<PayloadRow>`
-          SELECT payload_json FROM orchestration_v2_projection_threads
-          WHERE thread_id = ${threadId}
+        const rows = yield* sql<
+          PayloadRow & { readonly first_user_message_payload_json: string | null }
+        >`
+          SELECT t.payload_json, ${firstCreatorMessage} AS first_user_message_payload_json
+          FROM orchestration_v2_projection_threads t
+          WHERE t.thread_id = ${threadId}
         `;
         if (rows[0] === undefined) {
           return yield* new ProjectionStoreThreadNotFoundError({ threadId });
         }
-        return yield* decodeThreadPayload(rows[0].payload_json);
+        return yield* decodeThreadWithCreator(rows[0]);
       }).pipe(
         Effect.mapError((cause) =>
           isProjectionStoreThreadNotFoundError(cause)
@@ -5196,6 +5258,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             SELECT
               t.thread_id,
               t.payload_json,
+              ${firstCreatorMessage} AS first_user_message_payload_json,
               CASE
                 WHEN json_extract(t.payload_json, '$.forkedFrom.type') = 'run'
                   THEN json_extract(t.payload_json, '$.forkedFrom.threadId')
@@ -5650,20 +5713,24 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     ) =>
       Effect.gen(function* () {
         if (parentIds.length === 0) return [];
-        // The three fields a sidebar parent can come from narrow the scan;
+        // Stored parents and legacy origin candidates narrow the scan;
         // resolveSidebarParentThreadId then picks the one that applies.
-        const rows = yield* sql<PayloadRow>`
-          SELECT payload_json
-          FROM orchestration_v2_projection_threads
+        const rows = yield* sql<
+          PayloadRow & { readonly first_user_message_payload_json: string | null }
+        >`
+          SELECT t.payload_json, ${firstCreatorMessage} AS first_user_message_payload_json
+          FROM orchestration_v2_projection_threads t
           WHERE deleted_at IS NULL
             AND json_extract(payload_json, '$.archivedAt') IS NULL
             AND (
               json_extract(payload_json, '$.sidebarOrganization.threadId') IN ${sql.in(parentIds)}
               OR json_extract(payload_json, '$.forkedFrom.threadId') IN ${sql.in(parentIds)}
               OR json_extract(payload_json, '$.lineage.parentThreadId') IN ${sql.in(parentIds)}
+              OR json_extract(payload_json, '$.creatorThreadId') IN ${sql.in(parentIds)}
+              OR json_extract(${firstCreatorMessage}, '$.senderThreadId') IN ${sql.in(parentIds)}
             )
         `;
-        const threads = yield* Effect.forEach(rows, (row) => decodeThreadPayload(row.payload_json));
+        const threads = yield* Effect.forEach(rows, decodeThreadWithCreator);
         return sidebarChildThreadIds(threads, parentIds);
       }).pipe(Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })));
 
@@ -5688,7 +5755,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           providerThreadsByThreadId,
           pendingTurnItemsByThreadId,
         } = input;
-        const thread = yield* decodeThreadPayload(row.payload_json);
+        const thread = yield* decodeThreadWithCreator(row);
         const pendingRuntimeRequest =
           row.pending_request_payload_json !== null
             ? yield* decodeRuntimeRequestPayload(row.pending_request_payload_json)
@@ -6121,7 +6188,7 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
           if (projection === undefined) {
             return yield* new ProjectionStoreThreadNotFoundError({ threadId });
           }
-          return projection.thread;
+          return threadWithCreatorFromProjection(projection);
         }),
       getSettlementCandidates: (threadId) =>
         Effect.gen(function* () {
@@ -6183,7 +6250,7 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
         Ref.get(replayState).pipe(
           Effect.map((state) =>
             sidebarChildThreadIds(
-              [...state.projections.values()].map(({ thread }) => thread),
+              [...state.projections.values()].map(threadWithCreatorFromProjection),
               parentIds,
             ),
           ),
