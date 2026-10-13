@@ -128,21 +128,20 @@ cannot drag or move threads within it. Your saved order returns when you turn it
 
 On web and desktop, the sidebar nests related conversations under one parent. A fork
 sits under the thread it was forked from. Ordinary task conversations an agent creates
-sit under the thread that created them. Delegated work appears in a separate
-**Subagents** group beneath its owner, closed by default. Each group has its own
-count and open/closed choice. A closed group still reports whether its threads
+sit under the thread that created them. Delegated subagent conversations are hidden
+from the sidebar, its counts and search, including when moved to the top level.
+Direct links still open them, and their history and lineage remain available in chat.
+A closed ordinary group still reports whether its threads
 need an approval or an answer, finished unread, are working, or are waiting on
-background work, including descendants of the other kind. Those descendants have a
-separately labelled count. The thread you have open stays visible even when its tree is closed.
+background work. The ordinary thread you have open stays visible even when its tree is closed.
 Older task conversations whose creator is unknown stay at the top level until you
 group them yourself.
 
 New creator-only task groups start open. Saved choices for forks and manually
-grouped ordinary conversations remain; closing an old subagent-only group does not
-close newly grouped tasks.
+grouped ordinary conversations remain.
 
 A tree has three levels: a parent, the threads under it, and the threads under
-those. When forks or subagents go deeper than that, the deeper ones are listed on
+those. When ordinary task or fork ancestry goes deeper than that, the deeper ones are listed on
 the third level, next to the thread they came from.
 
 To group threads yourself, use a thread's menu, in the sidebar or in the chat header:
@@ -150,7 +149,7 @@ To group threads yourself, use a thread's menu, in the sidebar or in the chat he
 - **New subthread** starts a separate conversation under that thread, on the same
   project, branch and worktree, with the project's permissions and default model.
   It does not share the parent's history, and the parent does not wait on it.
-- **Move under…** opens a search over every thread on the same machine, in any
+- **Move under…** opens a search over ordinary threads on the same machine, in any
   project and any section, and places the thread under the one you pick. You can
   also drag a thread to the right over the row you want as its parent, then release.
   The dragged row says where it will go; over a spot that cannot take it, it says so
@@ -158,7 +157,7 @@ To group threads yourself, use a thread's menu, in the sidebar or in the chat he
 - **Move to top level** takes a thread out of its parent. It is also how you keep
   a thread at the top when its parent is archived: without it, the thread goes back
   under the parent when the parent returns.
-- **Return to original parent** puts a task conversation, fork or subagent you moved back where it
+- **Return to original parent** puts a task conversation or fork you moved back where it
   started.
 
 You cannot add a fourth level. New subthread is not offered on a thread on the
@@ -181,11 +180,9 @@ Searching the sidebar shows each match under the threads it is nested in, openin
 closed trees to reach it. Clearing the search puts every tree back the way you left
 it.
 
-When a parent is archived, deleted or filtered out, its threads stay in the list at
-the top level, subagents included. A subagent nested under its parent only opens and
-shows its status: pin, settle, snooze, archive and delete are offered on the tree's
-other threads. A subagent at the top level has the full menu, so you can settle or
-archive it there.
+When a parent is hidden, archived, deleted or filtered out, its ordinary threads
+stay accessible at the top level. This includes ordinary tasks created by a
+delegated agent or manually grouped under one; their saved parent stays unchanged.
 
 Grouping needs an up-to-date server on the thread's machine. The mobile app does
 not show trees: it lists threads flat and leaves subagents out.
