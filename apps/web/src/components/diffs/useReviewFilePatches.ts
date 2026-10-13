@@ -46,6 +46,7 @@ export function useReviewFilePatches({
     source?.kind,
     source?.diffHash,
     baseRef,
+    source?.commitRange,
     ignoreWhitespace,
   ]);
   const [requested, setRequested] = useState({ scope, indices: [0, 1, 2, 3] });
@@ -73,7 +74,11 @@ export function useReviewFilePatches({
                     cacheKey: scope,
                     request: {
                       cwd,
-                      ...(baseRef ? { baseRef } : {}),
+                      ...(source.commitRange
+                        ? { baseRef: source.commitRange.base, headRef: source.commitRange.head }
+                        : baseRef
+                          ? { baseRef }
+                          : {}),
                       ignoreWhitespace,
                       file: {
                         path: file.path,

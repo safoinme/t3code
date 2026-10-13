@@ -65,6 +65,7 @@ export function createReviewEnvironmentAtoms<R, E>(
             input.sourceKind,
             input.baseRef,
             input.headRef,
+            input.commitRange,
             input.oldPath,
             input.newPath,
             input.changeType,

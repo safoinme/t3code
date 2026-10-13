@@ -10,6 +10,11 @@ rebases, the files Git brought in are left out. A file stays in the list when th
 committed it, or fixed a conflict in it. Use the branch comparison to review everything that changed
 against your base branch. Restore still returns the complete saved workspace.
 
+In the diff panel, choose **Base** and **Compare** to review changes introduced by any local or
+remote branch since its common ancestor with the base. This does not switch your checkout.
+Choose **Working tree** to include local edits and untracked files. Branch comparisons use the
+refs available on the server; fetch new remote commits before comparing if needed.
+
 ## Connect an account
 
 Install Git and configure authentication on the machine running your T3 Code server. For a remote

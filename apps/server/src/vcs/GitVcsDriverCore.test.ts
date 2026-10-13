@@ -2160,6 +2160,70 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect(
+      "compares selected branches independent of the checkout and pins file expansion",
+      () =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTmpDir();
+          const { initialBranch } = yield* initRepoWithCommit(cwd);
+          const driver = yield* GitVcsDriver.GitVcsDriver;
+          yield* git(cwd, ["checkout", "-b", "feature/claims"]);
+          yield* writeTextFile(cwd, "README.md", "# claims\n");
+          yield* writeTextFile(cwd, "claims.txt", "claims\n");
+          yield* git(cwd, ["add", "."]);
+          yield* git(cwd, ["commit", "-m", "claims"]);
+          yield* git(cwd, ["update-ref", "refs/remotes/origin/feature/claims", "HEAD"]);
+          yield* git(cwd, ["checkout", initialBranch]);
+          yield* writeTextFile(cwd, "infrastructure.txt", "base-only\n");
+          yield* git(cwd, ["add", "."]);
+          yield* git(cwd, ["commit", "-m", "unrelated base work"]);
+          yield* writeTextFile(cwd, "README.md", "# dirty checkout\n");
+          yield* writeTextFile(cwd, "untracked.txt", "untracked\n");
+          const input = { cwd, baseRef: initialBranch, headRef: "origin/feature/claims" };
+          const preview = yield* driver.getReviewDiffPreview(input);
+          const source = preview.sources.find((s) => s.kind === "branch-range")!;
+          assert.deepStrictEqual(source.files, [
+            { path: "README.md", previousPath: null, additions: 1, deletions: 1 },
+            { path: "claims.txt", previousPath: null, additions: 1, deletions: 0 },
+          ]);
+          assert.include(source.diff, "+# claims");
+          assert.notInclude(source.diff, "dirty checkout");
+          assert.notInclude(source.diff, "infrastructure");
+          assert.notInclude(source.diff, "untracked");
+          assert.match(source.commitRange!.base, /^[0-9a-f]{40}$/);
+          assert.match(source.commitRange!.head, /^[0-9a-f]{40}$/);
+          // Branches may move while the panel is open; lazy reads must retain the preview snapshot.
+          yield* git(cwd, ["update-ref", "refs/remotes/origin/feature/claims", "HEAD"]);
+          const patch = yield* driver.getReviewDiffPreview({
+            cwd,
+            baseRef: source.commitRange!.base,
+            headRef: source.commitRange!.head,
+            file: { path: "README.md", previousPath: null, sourceKind: "branch-range" },
+          });
+          assert.include(patch.sources.find((s) => s.kind === "branch-range")!.diff, "+# claims");
+          const contents = yield* driver.getReviewDiffFileContents(
+            makeReviewDiffFileContentsInput(cwd, {
+              sourceKind: "branch-range",
+              baseRef: input.baseRef,
+              headRef: input.headRef,
+              commitRange: source.commitRange!,
+            }),
+          );
+          assert.deepStrictEqual(contents, { oldContents: "# test\n", newContents: "# claims\n" });
+          const same = yield* driver.getReviewDiffPreview({
+            cwd,
+            baseRef: initialBranch,
+            headRef: initialBranch,
+          });
+          assert.deepStrictEqual(same.sources.find((s) => s.kind === "branch-range")!.files, []);
+          const bad = yield* driver
+            .getReviewDiffPreview({ ...input, headRef: "missing-branch" })
+            .pipe(Effect.flip);
+          assert.strictEqual(bad.operation, "GitVcsDriver.resolveReviewHead");
+          assert.strictEqual((yield* git(cwd, ["branch", "--show-current"])).trim(), initialBranch);
+        }),
+    );
+
     it.effect("Changes on the default branch compares with its remote copy", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

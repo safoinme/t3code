@@ -21,6 +21,7 @@ interface GitDiffFileContentsSource {
   readonly sourceKind: ReviewDiffPreviewSourceKind;
   readonly baseRef: string | null;
   readonly headRef: string | null;
+  readonly commitRange?: ReviewDiffFileContentsInput["commitRange"];
   /** The comparison identity Pierre carries into its hydrated render cache. */
   readonly cacheKey: string;
 }
@@ -89,6 +90,7 @@ export function createGitDiffFileContentsLoader<E>(
         changeType,
         baseRef: source.baseRef,
         headRef: source.headRef,
+        ...(source.commitRange ? { commitRange: source.commitRange } : {}),
         oldPath,
         newPath,
       },

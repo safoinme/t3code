@@ -2713,12 +2713,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     return { env };
   });
 
-  // The diff panel's Changes view compares the working tree with merge-base(base, HEAD).
+  // Default Changes compares disk with merge-base(base, HEAD); an explicit head compares commits.
   // With no usable base it compares with HEAD, so Changes equals Uncommitted.
   const resolveReviewMergeBase = Effect.fn("resolveReviewMergeBase")(function* (
     cwd: string,
     branch: string | null,
     explicitBaseRef?: string,
+    headRef = "HEAD",
   ) {
     const baseRef =
       explicitBaseRef ??
@@ -2727,8 +2728,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             Effect.orElseSucceed(() => null),
           )
         : null);
-    if (baseRef === null) return { baseRef, mergeBase: "HEAD" };
-    const args = ["merge-base", baseRef, "HEAD"];
+    if (baseRef === null) return { baseRef, mergeBase: headRef };
+    const args = ["merge-base", "--", baseRef, headRef];
     const result = yield* executeGit("GitVcsDriver.resolveReviewMergeBase", cwd, args, {
       allowNonZeroExit: true,
     });
@@ -2746,7 +2747,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       }
       return yield* new GitCommandError({
         ...gitCommandContext({ operation: "GitVcsDriver.resolveReviewMergeBase", cwd, args }),
-        detail: `Could not find a common commit between '${baseRef}' and HEAD.`,
+        detail: `Could not find a common commit between '${baseRef}' and '${headRef}'.`,
         exitCode: result.exitCode,
       });
     }
@@ -2827,12 +2828,25 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     }
 
     const cwd = repository.worktreeRoot;
+    const headCommit = input.headRef
+      ? (yield* runGitStdout("GitVcsDriver.resolveReviewHead", cwd, [
+          "rev-parse",
+          "--verify",
+          "--end-of-options",
+          `${input.headRef}^{commit}`,
+        ])).trim()
+      : null;
     // A per-file request only reads its own source.
-    const dirtyRef = input.file?.sourceKind === "branch-range" ? null : "HEAD";
+    const dirtyRef = headCommit || input.file?.sourceKind === "branch-range" ? null : "HEAD";
     const review =
       input.file?.sourceKind === "working-tree"
         ? { baseRef: input.baseRef ?? null, mergeBase: null }
-        : yield* resolveReviewMergeBase(cwd, repository.currentBranch, input.baseRef);
+        : yield* resolveReviewMergeBase(
+            cwd,
+            input.headRef ?? repository.currentBranch,
+            input.baseRef,
+            headCommit ?? "HEAD",
+          );
 
     const diffArgs = [
       ...REVIEW_DIFF_ARGS,
@@ -2841,16 +2855,17 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const readStats = Effect.fn("GitVcsDriver.getReviewDiffPreview.stat")(function* (
       ref: string,
       env?: NodeJS.ProcessEnv,
+      head?: string,
     ) {
       const args = [...diffArgs, "--numstat", "-z"];
       const result = yield* executeGit(
         "GitVcsDriver.getReviewDiffPreview.stat",
         cwd,
-        [...args, ref, "--", ...pathArgs],
+        [...args, ref, ...(head ? [head] : []), "--", ...pathArgs],
         { allowNonZeroExit: true, maxOutputBytes: REVIEW_METADATA_MAX_OUTPUT_BYTES, env },
       );
       if (result.exitCode === 0) return { ref, files: parseReviewNumstat(result.stdout) };
-      if (ref === "HEAD" && isUnbornHeadStderr(result.stderr)) {
+      if (!head && ref === "HEAD" && isUnbornHeadStderr(result.stderr)) {
         const emptyTree = yield* readEmptyTreeHash(cwd);
         const stdout = yield* runGitStdoutWithOptions(
           "GitVcsDriver.getReviewDiffPreview.unbornStat",
@@ -2868,34 +2883,41 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         exitCode: result.exitCode,
       });
     });
-    // One commit argument diffs that commit against the working tree.
+    // One revision compares with disk; two compare committed trees.
     const readTrackedDiff = Effect.fn("GitVcsDriver.getReviewDiffPreview.tracked")(function* (
       ref: string | null,
       env?: NodeJS.ProcessEnv,
+      head?: string,
     ) {
       if (ref === null) return { stdout: "", stdoutTruncated: false, files: [] };
-      const stat = yield* readStats(ref, env);
+      const stat = yield* readStats(ref, env, head);
       if (stat.files.length === 0) return { stdout: "", stdoutTruncated: false, files: [] };
       const patch = yield* executeGit(
         "GitVcsDriver.getReviewDiffPreview.patch",
         cwd,
-        [...diffArgs, "--patch", stat.ref, "--", ...pathArgs],
+        [...diffArgs, "--patch", stat.ref, ...(head ? [head] : []), "--", ...pathArgs],
         { maxOutputBytes: patchLimit, appendTruncationMarker: true, env },
       );
       return { ...patch, files: stat.files };
     });
     const [dirtyTrackedResult, baseResult] = yield* Effect.gen(function* () {
-      const untracked = yield* prepareUntrackedReviewIndex(cwd, pathArgs, input.file?.path);
+      const untracked = headCommit
+        ? { env: undefined }
+        : yield* prepareUntrackedReviewIndex(cwd, pathArgs, input.file?.path);
       // With no base both sources diff HEAD, so read it once.
       const [dirty, base] =
-        review.mergeBase === dirtyRef
+        headCommit === null && review.mergeBase === dirtyRef
           ? yield* readTrackedDiff(dirtyRef, untracked?.env).pipe(
               Effect.map((result) => [result, result] as const),
             )
           : yield* Effect.all(
               [
                 readTrackedDiff(dirtyRef, untracked?.env),
-                readTrackedDiff(review.mergeBase, untracked?.env),
+                readTrackedDiff(
+                  review.mergeBase,
+                  headCommit ? undefined : untracked?.env,
+                  headCommit ?? undefined,
+                ),
               ],
               { concurrency: 2 },
             );
@@ -2925,7 +2947,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       );
     const [dirtyDiffHash, baseDiffHash] = yield* Effect.all([
       hashDiff(dirtyDiff, dirtyFiles ?? []),
-      hashDiff(baseDiff, baseFiles ?? []),
+      hashDiff(
+        headCommit ? `${review.mergeBase}\0${headCommit}\0${baseDiff}` : baseDiff,
+        baseFiles ?? [],
+      ),
     ]);
 
     const sources: ReviewDiffPreviewSource[] = [
@@ -2945,8 +2970,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         kind: "branch-range",
         title: review.baseRef ? `Changes vs ${review.baseRef}` : "Changes",
         baseRef: review.baseRef,
-        // For display only. The new side is the working tree.
-        headRef: repository.currentBranch ?? "HEAD",
+        headRef: input.headRef ?? repository.currentBranch ?? "HEAD",
+        ...(headCommit && review.mergeBase
+          ? { commitRange: { base: review.mergeBase, head: headCommit } }
+          : {}),
         diff: baseDiff,
         ...(baseFiles === undefined ? {} : { files: baseFiles }),
         diffHash: baseDiffHash,
@@ -3064,8 +3091,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     return new TextDecoder("utf-8").decode(bytes);
   });
 
-  // Both views compare a commit with the working tree: HEAD for Uncommitted,
-  // merge-base(base, HEAD) for Changes. The new side always comes from disk.
+  // Legacy Changes requests read disk. Explicit comparisons expand the exact preview revisions.
   const getReviewDiffFileContents = Effect.fn("getReviewDiffFileContents")(function* (
     input: ReviewDiffFileContentsInput,
   ) {
@@ -3077,10 +3103,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     if (repositoryRoot.length === 0) {
       return yield* reviewDiffFileError(input, "Could not resolve the Git repository root.");
     }
+    const commitRange = input.sourceKind === "branch-range" ? input.commitRange : undefined;
     const oldRevision =
-      input.sourceKind === "working-tree"
+      commitRange?.base ??
+      (input.sourceKind === "working-tree"
         ? (input.baseRef ?? "HEAD")
-        : (yield* resolveReviewMergeBase(input.cwd, null, input.baseRef ?? undefined)).mergeBase;
+        : (yield* resolveReviewMergeBase(input.cwd, null, input.baseRef ?? undefined)).mergeBase);
     const [oldContents, newContents] = yield* Effect.all(
       [
         input.changeType === "new"
@@ -3088,7 +3116,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           : readReviewFileAtRevision(input, oldRevision, input.oldPath),
         input.changeType === "deleted"
           ? Effect.succeed("")
-          : readWorkingTreeReviewFile(input, repositoryRoot),
+          : commitRange
+            ? readReviewFileAtRevision(input, commitRange.head, input.newPath)
+            : readWorkingTreeReviewFile(input, repositoryRoot),
       ],
       { concurrency: 2 },
     );

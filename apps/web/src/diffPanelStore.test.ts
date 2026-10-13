@@ -11,6 +11,7 @@ describe("diffPanelStore", () => {
     useDiffPanelStore.setState({
       byThreadKey: {},
       branchBaseRefByThreadKey: {},
+      branchHeadRefByThreadKey: {},
     }),
   );
 
@@ -85,6 +86,32 @@ describe("diffPanelStore", () => {
     expect(
       selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF),
     ).toEqual({ kind: "branch", baseRef: "origin/release" });
+  });
+
+  it("keeps both comparison refs through base changes, turn views and uncommitted views", () => {
+    const store = useDiffPanelStore.getState();
+    store.selectBranchBaseRef(THREAD_REF, "develop");
+    store.selectBranchHeadRef(THREAD_REF, " origin/feature/oidc-claims ");
+    store.selectBranchBaseRef(THREAD_REF, "origin/develop");
+    store.selectTurn(THREAD_REF, RunId.make("turn-1"));
+    store.selectGitScope(THREAD_REF, "unstaged");
+    store.selectGitScope(THREAD_REF, "branch");
+    expect(
+      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF),
+    ).toEqual({
+      kind: "branch",
+      baseRef: "origin/develop",
+      headRef: "origin/feature/oidc-claims",
+    });
+    store.selectBranchHeadRef(THREAD_REF, null);
+    expect(
+      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF),
+    ).toEqual({ kind: "branch", baseRef: "origin/develop" });
+    store.removeThread(THREAD_REF);
+    store.selectGitScope(THREAD_REF, "branch");
+    expect(
+      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF),
+    ).toEqual({ kind: "branch", baseRef: null });
   });
 
   it("increments the reveal request when opening the same turn file again", () => {

@@ -56,6 +56,28 @@ describe("createGitDiffFileContentsLoader", () => {
     });
   });
 
+  it("expands the immutable revisions from the preview", async () => {
+    const commitRange = { base: "a".repeat(40), head: "b".repeat(40) };
+    const getDiffFileContents = vi.fn(async () =>
+      AsyncResult.success({ oldContents: "before\n", newContents: "after\n" }),
+    );
+    const load = createGitDiffFileContentsLoader(getDiffFileContents, { ...SOURCE, commitRange });
+    await load(fileDiff());
+    expect(getDiffFileContents).toHaveBeenCalledWith({
+      environmentId: SOURCE.environmentId,
+      input: {
+        cwd: SOURCE.cwd,
+        sourceKind: "branch-range",
+        changeType: "rename-changed",
+        baseRef: "main",
+        headRef: "feature",
+        commitRange,
+        oldPath: "src/old-name.ts",
+        newPath: "src/new-name.ts",
+      },
+    });
+  });
+
   it("loads a pure rename from its one shared file", async () => {
     const getDiffFileContents = vi.fn(async () =>
       AsyncResult.success({ oldContents: "same\n", newContents: "same\n" }),

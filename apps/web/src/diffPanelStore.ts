@@ -6,18 +6,20 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import { resolveStorage } from "./lib/storage";
 
 export type DiffPanelSelection =
-  | { kind: "branch"; baseRef: string | null }
+  | { kind: "branch"; baseRef: string | null; headRef?: string }
   | { kind: "unstaged" }
   | { kind: "turn"; turnId: RunId; filePath: string | null; revealRequestId: number };
 
-// "branch" is the Changes view: everything this checkout changed since its base.
+// Without a selected head, Changes includes this checkout; a selected head compares commits.
 const DEFAULT_SELECTION: DiffPanelSelection = { kind: "branch", baseRef: null };
 
 interface DiffPanelStoreState {
   byThreadKey: Record<string, DiffPanelSelection>;
   branchBaseRefByThreadKey: Record<string, string | null>;
+  branchHeadRefByThreadKey: Record<string, string | null>;
   selectGitScope: (ref: ScopedThreadRef, scope: "branch" | "unstaged") => void;
   selectBranchBaseRef: (ref: ScopedThreadRef, baseRef: string | null) => void;
+  selectBranchHeadRef: (ref: ScopedThreadRef, headRef: string | null) => void;
   selectTurn: (ref: ScopedThreadRef, turnId: RunId, filePath?: string) => void;
   reconcileTurnSelection: (ref: ScopedThreadRef, availableTurnIds: ReadonlyArray<RunId>) => void;
   removeThread: (ref: ScopedThreadRef) => void;
@@ -33,6 +35,7 @@ export const useDiffPanelStore = create<DiffPanelStoreState>()(
     (set) => ({
       byThreadKey: {},
       branchBaseRefByThreadKey: {},
+      branchHeadRefByThreadKey: {},
       selectGitScope: (ref, scope) =>
         set((state) => {
           const threadKey = scopedThreadKey(ref);
@@ -41,12 +44,20 @@ export const useDiffPanelStore = create<DiffPanelStoreState>()(
             previous?.kind === "branch"
               ? previous.baseRef
               : (state.branchBaseRefByThreadKey[threadKey] ?? null);
+          const previousHeadRef =
+            previous?.kind === "branch"
+              ? previous.headRef
+              : state.branchHeadRefByThreadKey[threadKey];
           return {
             byThreadKey: {
               ...state.byThreadKey,
               [threadKey]:
                 scope === "branch"
-                  ? { kind: "branch", baseRef: previousBaseRef }
+                  ? {
+                      kind: "branch",
+                      baseRef: previousBaseRef,
+                      ...(previousHeadRef ? { headRef: previousHeadRef } : {}),
+                    }
                   : { kind: "unstaged" },
             },
             branchBaseRefByThreadKey:
@@ -59,14 +70,39 @@ export const useDiffPanelStore = create<DiffPanelStoreState>()(
         set((state) => {
           const threadKey = scopedThreadKey(ref);
           const normalizedBaseRef = normalizeBaseRef(baseRef);
+          const headRef = state.branchHeadRefByThreadKey[threadKey];
           return {
             byThreadKey: {
               ...state.byThreadKey,
-              [threadKey]: { kind: "branch", baseRef: normalizedBaseRef },
+              [threadKey]: {
+                kind: "branch",
+                baseRef: normalizedBaseRef,
+                ...(headRef ? { headRef } : {}),
+              },
             },
             branchBaseRefByThreadKey: {
               ...state.branchBaseRefByThreadKey,
               [threadKey]: normalizedBaseRef,
+            },
+          };
+        }),
+      selectBranchHeadRef: (ref, headRef) =>
+        set((state) => {
+          const threadKey = scopedThreadKey(ref);
+          const normalizedHeadRef = normalizeBaseRef(headRef);
+          const baseRef = state.branchBaseRefByThreadKey[threadKey] ?? null;
+          return {
+            byThreadKey: {
+              ...state.byThreadKey,
+              [threadKey]: {
+                kind: "branch",
+                baseRef,
+                ...(normalizedHeadRef ? { headRef: normalizedHeadRef } : {}),
+              },
+            },
+            branchHeadRefByThreadKey: {
+              ...state.branchHeadRefByThreadKey,
+              [threadKey]: normalizedHeadRef,
             },
           };
         }),
@@ -108,13 +144,19 @@ export const useDiffPanelStore = create<DiffPanelStoreState>()(
       removeThread: (ref) =>
         set((state) => {
           const threadKey = scopedThreadKey(ref);
-          if (!(threadKey in state.byThreadKey) && !(threadKey in state.branchBaseRefByThreadKey)) {
+          if (
+            !(threadKey in state.byThreadKey) &&
+            !(threadKey in state.branchBaseRefByThreadKey) &&
+            !(threadKey in state.branchHeadRefByThreadKey)
+          ) {
             return state;
           }
           const { [threadKey]: _removed, ...byThreadKey } = state.byThreadKey;
           const { [threadKey]: _removedBaseRef, ...branchBaseRefByThreadKey } =
             state.branchBaseRefByThreadKey;
-          return { byThreadKey, branchBaseRefByThreadKey };
+          const { [threadKey]: _removedHeadRef, ...branchHeadRefByThreadKey } =
+            state.branchHeadRefByThreadKey;
+          return { byThreadKey, branchBaseRefByThreadKey, branchHeadRefByThreadKey };
         }),
     }),
     {
@@ -126,6 +168,7 @@ export const useDiffPanelStore = create<DiffPanelStoreState>()(
       partialize: (state) => ({
         byThreadKey: state.byThreadKey,
         branchBaseRefByThreadKey: state.branchBaseRefByThreadKey,
+        branchHeadRefByThreadKey: state.branchHeadRefByThreadKey,
       }),
     },
   ),

@@ -6,6 +6,8 @@ import { VcsError } from "./vcs.ts";
 export const ReviewDiffPreviewInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
   baseRef: Schema.optional(TrimmedNonEmptyString),
+  /** When supplied, compare committed branches instead of the working tree. */
+  headRef: Schema.optionalKey(TrimmedNonEmptyString),
   ignoreWhitespace: Schema.optionalKey(Schema.Boolean),
   file: Schema.optionalKey(
     Schema.Struct({
@@ -28,12 +30,20 @@ export const ReviewDiffFileStat = Schema.Struct({
 });
 export type ReviewDiffFileStat = typeof ReviewDiffFileStat.Type;
 
+const ReviewCommitHash = Schema.String.check(Schema.isPattern(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/));
+const ReviewCommitRange = Schema.Struct({
+  base: ReviewCommitHash,
+  head: ReviewCommitHash,
+});
+
 export const ReviewDiffPreviewSource = Schema.Struct({
   id: TrimmedNonEmptyString,
   kind: ReviewDiffPreviewSourceKind,
   title: TrimmedNonEmptyString,
   baseRef: Schema.NullOr(TrimmedNonEmptyString),
   headRef: Schema.NullOr(TrimmedNonEmptyString),
+  /** Immutable revisions used by the preview, lazy patches and full-file expansion. */
+  commitRange: Schema.optionalKey(ReviewCommitRange),
   diff: Schema.String,
   diffHash: TrimmedNonEmptyString,
   truncated: Schema.Boolean,
@@ -48,6 +58,8 @@ export const ReviewDiffFileContentsInput = Schema.Struct({
   changeType: Schema.Literals(["change", "rename-pure", "rename-changed", "new", "deleted"]),
   baseRef: Schema.NullOr(TrimmedNonEmptyString),
   headRef: Schema.NullOr(TrimmedNonEmptyString),
+  /** Immutable revisions used by the preview, lazy patches and full-file expansion. */
+  commitRange: Schema.optionalKey(ReviewCommitRange),
   oldPath: TrimmedNonEmptyString,
   newPath: TrimmedNonEmptyString,
 });
